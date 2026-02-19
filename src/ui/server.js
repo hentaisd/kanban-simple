@@ -201,6 +201,32 @@ app.delete('/api/tasks/:id', async (req, res) => {
 });
 
 /**
+ * GET /api/projects - Lista los proyectos registrados en kanban.config.js
+ */
+app.get('/api/projects', (req, res) => {
+  try {
+    let cfg = {};
+    try {
+      delete require.cache[require.resolve('../../kanban.config.js')];
+      cfg = require('../../kanban.config.js');
+    } catch {}
+
+    const projects = cfg.projects || {};
+    const defaultProject = cfg.defaultProject || '';
+
+    const list = Object.entries(projects).map(([name, data]) => ({
+      name,
+      path: data.path,
+      isDefault: name === defaultProject,
+    }));
+
+    res.json({ success: true, data: list, defaultProject });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
  * GET /api/tasks/:id/history - Historial de ejecución de una tarea
  */
 app.get('/api/tasks/:id/history', async (req, res) => {

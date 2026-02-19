@@ -20,6 +20,7 @@ let editingTaskId = null;   // ID de tarea en edición
 let currentDetailTaskId = null; // ID de tarea en modal detalle
 let notifPermission = 'default'; // 'granted' | 'denied' | 'default'
 let metricsVisible = false;
+let registeredProjects = []; // proyectos desde kanban.config.js
 
 // ─────────────────────────────────────────────
 // INICIALIZACIÓN
@@ -27,6 +28,7 @@ let metricsVisible = false;
 document.addEventListener('DOMContentLoaded', () => {
   buildBoard();
   loadTasks();
+  loadProjects();
   setupSSE();
   setupKeyboardShortcuts();
   initNotifications();
@@ -98,6 +100,43 @@ function sendOSNotification(title, body) {
   try {
     new Notification(title, { body, icon: '🤖' });
   } catch {}
+}
+
+// ─────────────────────────────────────────────
+// PROYECTOS
+// ─────────────────────────────────────────────
+async function loadProjects() {
+  try {
+    const res = await fetch('/api/projects');
+    const { success, data, defaultProject } = await res.json();
+    if (!success) return;
+
+    registeredProjects = data;
+    populateProjectSelect(defaultProject);
+  } catch {}
+}
+
+function populateProjectSelect(defaultProject) {
+  const select = document.getElementById('taskProjectPath');
+  if (!select) return;
+
+  // Limpiar opciones excepto la primera (sin proyecto)
+  while (select.options.length > 1) select.remove(1);
+
+  for (const proj of registeredProjects) {
+    const opt = document.createElement('option');
+    opt.value = proj.name;
+    opt.textContent = proj.isDefault
+      ? `${proj.name} (por defecto) — ${proj.path}`
+      : `${proj.name} — ${proj.path}`;
+    if (proj.isDefault && !defaultProject) opt.selected = true;
+    select.appendChild(opt);
+  }
+
+  // Si solo hay un proyecto, seleccionarlo automáticamente
+  if (registeredProjects.length === 1) {
+    select.value = registeredProjects[0].name;
+  }
 }
 
 // ─────────────────────────────────────────────
@@ -410,7 +449,10 @@ function openCreateModal(defaultColumn = 'backlog') {
   document.getElementById('taskColumn').value = defaultColumn;
   document.getElementById('taskLabels').value = '';
   document.getElementById('taskDependsOn').value = '';
-  document.getElementById('taskProjectPath').value = '';
+  // Seleccionar proyecto por defecto
+  const sel = document.getElementById('taskProjectPath');
+  const defProj = registeredProjects.find(p => p.isDefault);
+  sel.value = defProj ? defProj.name : (registeredProjects.length === 1 ? registeredProjects[0].name : '');
   document.getElementById('taskContent').value = '# Descripción\n\n\n# Criterios de aceptación\n- ';
   document.getElementById('deleteBtn').style.display = 'none';
 
@@ -433,7 +475,11 @@ async function openEditModal(taskId) {
     document.getElementById('taskColumn').value = task.column || task.status || 'backlog';
     document.getElementById('taskLabels').value = (task.labels || []).join(', ');
     document.getElementById('taskDependsOn').value = (task.dependsOn || []).join(', ');
-    document.getElementById('taskProjectPath').value = task.projectPath || '';
+    // Restaurar proyecto: si es un nombre registrado úsalo, si no déjalo vacío
+    const projSel = document.getElementById('taskProjectPath');
+    const projVal = task.projectPath || '';
+    const isRegistered = registeredProjects.some(p => p.name === projVal);
+    projSel.value = isRegistered ? projVal : '';
     document.getElementById('taskContent').value = task.content || '';
     document.getElementById('deleteBtn').style.display = 'inline-block';
 
@@ -479,6 +525,7 @@ function openDetailModal(e, taskId) {
       <div style="font-size:0.75rem;color:var(--text-muted);font-family:monospace;margin-bottom:8px">
         📁 ${task.branch || '—'} &nbsp;|&nbsp; 📂 ${task.column || task.status}
       </div>
+      ${task.projectPath ? `<div style="font-size:0.72rem;color:var(--text-muted);margin-bottom:8px">📦 Proyecto: ${escapeHtml(resolveProjectLabel(task.projectPath))}</div>` : ''}
       ${deps ? `<div style="font-size:0.72rem;color:var(--text-muted);margin-bottom:8px">🔗 Depende de: ${escapeHtml(deps)}</div>` : ''}
       ${task.createdAt ? `<div style="font-size:0.7rem;color:var(--text-muted);margin-bottom:4px">📅 Creada: ${new Date(task.createdAt).toLocaleString()}</div>` : ''}
       ${task.completedAt ? `<div style="font-size:0.7rem;color:var(--text-muted);margin-bottom:4px">✅ Completada: ${new Date(task.completedAt).toLocaleString()}</div>` : ''}
@@ -763,6 +810,12 @@ function escapeHtml(str) {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
+}
+
+function resolveProjectLabel(projectRef) {
+  if (!projectRef) return '';
+  const proj = registeredProjects.find(p => p.name === projectRef);
+  return proj ? `${proj.name} (${proj.path})` : projectRef;
 }
 
 function findTask(id) {

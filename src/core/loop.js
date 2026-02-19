@@ -31,7 +31,6 @@ function loadConfig(overrides = {}) {
   let cfg = {};
   const cfgPath = path.join(KANBAN_ROOT, 'kanban.config.js');
   try {
-    // Forzar re-lectura (evitar cache de require)
     delete require.cache[require.resolve(cfgPath)];
     cfg = require(cfgPath);
   } catch {
@@ -39,8 +38,10 @@ function loadConfig(overrides = {}) {
   }
 
   return {
-    projectPath: overrides.project || cfg.projectPath || process.cwd(),
-    engine:      overrides.engine  || cfg.engine      || 'claude',
+    projects:       cfg.projects      || {},
+    defaultProject: cfg.defaultProject || '',
+    projectPath:    overrides.project || cfg.projectPath || process.cwd(),
+    engine:         overrides.engine  || cfg.engine      || 'claude',
     git: {
       enabled:       cfg.git?.enabled       ?? true,
       defaultBranch: cfg.git?.defaultBranch ?? 'main',
@@ -48,9 +49,51 @@ function loadConfig(overrides = {}) {
       autoMerge:     cfg.git?.autoMerge     ?? true,
     },
     loop: {
-      waitSeconds:   cfg.loop?.waitSeconds   ?? 30,
+      waitSeconds:    cfg.loop?.waitSeconds    ?? 30,
       maxTasksPerRun: cfg.loop?.maxTasksPerRun ?? 0,
     },
+  };
+}
+
+/**
+ * Resuelve el projectPath de una tarea.
+ * Orden: task.projectPath (nombre o ruta) → defaultProject → config.projectPath
+ */
+function resolveProjectPath(task, config) {
+  const ref = task.projectPath;
+
+  if (ref) {
+    // Si es un nombre registrado en projects, devolver su path
+    if (config.projects[ref]) {
+      return config.projects[ref].path;
+    }
+    // Si es una ruta absoluta, usarla directamente
+    if (path.isAbsolute(ref)) {
+      return ref;
+    }
+  }
+
+  // Usar defaultProject si está configurado
+  if (config.defaultProject && config.projects[config.defaultProject]) {
+    return config.projects[config.defaultProject].path;
+  }
+
+  // Fallback al projectPath global
+  return config.projectPath;
+}
+
+/**
+ * Resuelve la config git para un proyecto.
+ * El proyecto puede tener su propia config git que sobreescribe la global.
+ */
+function resolveGitConfig(task, config) {
+  const ref = task.projectPath;
+  const projectCfg = ref && config.projects[ref] ? config.projects[ref] : null;
+  return {
+    enabled:       projectCfg?.git?.enabled       ?? config.git.enabled,
+    defaultBranch: projectCfg?.git?.defaultBranch ?? config.git.defaultBranch,
+    autoPush:      projectCfg?.git?.autoPush      ?? config.git.autoPush,
+    autoMerge:     projectCfg?.git?.autoMerge     ?? config.git.autoMerge,
   };
 }
 
@@ -117,10 +160,10 @@ function updateTaskFields(taskId, fields) {
 // ─────────────────────────────────────────────
 
 async function processTask(task, config) {
-  const { projectPath, engine, git: gitCfg } = config;
+  const { engine } = config;
 
-  // Usar projectPath específico de la tarea si está definido
-  const taskProjectPath = task.projectPath || projectPath;
+  const taskProjectPath = resolveProjectPath(task, config);
+  const gitCfg = resolveGitConfig(task, config);
 
   console.log(chalk.blue.bold(`\n${'═'.repeat(62)}`));
   console.log(chalk.blue.bold(`  🚀 TAREA #${task.id}: ${task.title}`));
