@@ -32,7 +32,43 @@ document.addEventListener('DOMContentLoaded', () => {
   setupSSE();
   setupKeyboardShortcuts();
   initNotifications();
+  initLoopStatus();
 });
+
+// ─────────────────────────────────────────────
+// CONTROL DEL MOTOR IA
+// ─────────────────────────────────────────────
+let loopRunning = false;
+
+async function initLoopStatus() {
+  try {
+    const res = await fetch('/api/loop/status');
+    const { status } = await res.json();
+    setLoopUI(status === 'running');
+  } catch {}
+}
+
+async function toggleLoop() {
+  const endpoint = loopRunning ? '/api/loop/stop' : '/api/loop/start';
+  const res = await fetch(endpoint, { method: 'POST' });
+  const data = await res.json();
+  if (!data.success && data.error) showToast(data.error, 'error');
+}
+
+function setLoopUI(running) {
+  loopRunning = running;
+  const btn = document.getElementById('loopBtn');
+  if (!btn) return;
+  if (running) {
+    btn.textContent = '⏹ Motor';
+    btn.classList.add('loop-running');
+    btn.title = 'Detener motor IA';
+  } else {
+    btn.textContent = '▶ Motor';
+    btn.classList.remove('loop-running');
+    btn.title = 'Iniciar motor IA';
+  }
+}
 
 // ─────────────────────────────────────────────
 // BANNER DE ESTADO DEL MOTOR IA
@@ -264,6 +300,11 @@ function setupSSE() {
         loadTasks(false);
         return;
       }
+
+      // Eventos del loop
+      if (data.type === 'loop:started') { setLoopUI(true); return; }
+      if (data.type === 'loop:stopped') { setLoopUI(false); loadTasks(false); return; }
+      if (data.type === 'loop:log') return; // solo para consola interna
 
       loadTasks(false);
 

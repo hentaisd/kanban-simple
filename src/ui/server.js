@@ -530,6 +530,69 @@ app.post('/api/tasks/:id/rollback', async (req, res) => {
   }
 });
 
+// ─────────────────────────────────────────────
+// CONTROL DEL MOTOR IA
+// ─────────────────────────────────────────────
+const { spawn } = require('child_process');
+const CLI_PATH = path.join(__dirname, '../../src/cli/index.js');
+
+let loopProcess = null;
+
+function getLoopStatus() {
+  if (!loopProcess || loopProcess.exitCode !== null) return 'stopped';
+  return 'running';
+}
+
+/**
+ * GET /api/loop/status - Estado del motor IA
+ */
+app.get('/api/loop/status', (req, res) => {
+  res.json({ status: getLoopStatus(), pid: loopProcess?.pid || null });
+});
+
+/**
+ * POST /api/loop/start - Arrancar el motor IA
+ */
+app.post('/api/loop/start', (req, res) => {
+  if (getLoopStatus() === 'running') {
+    return res.json({ success: false, error: 'El motor ya está corriendo' });
+  }
+
+  loopProcess = spawn('node', [CLI_PATH, 'start'], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env },
+  });
+
+  loopProcess.stdout.on('data', (d) => {
+    const line = d.toString().trim();
+    if (line) {
+      broadcastChange('loop:log', { line });
+      process.stdout.write('[loop] ' + line + '\n');
+    }
+  });
+  loopProcess.stderr.on('data', (d) => {
+    const line = d.toString().trim();
+    if (line) broadcastChange('loop:log', { line, level: 'error' });
+  });
+  loopProcess.on('exit', (code) => {
+    broadcastChange('loop:stopped', { code });
+  });
+
+  broadcastChange('loop:started', { pid: loopProcess.pid });
+  res.json({ success: true, pid: loopProcess.pid });
+});
+
+/**
+ * POST /api/loop/stop - Detener el motor IA
+ */
+app.post('/api/loop/stop', (req, res) => {
+  if (getLoopStatus() !== 'running') {
+    return res.json({ success: false, error: 'El motor no está corriendo' });
+  }
+  loopProcess.kill('SIGTERM');
+  res.json({ success: true });
+});
+
 /**
  * GET /api/health - Health check con estado del caché
  */
