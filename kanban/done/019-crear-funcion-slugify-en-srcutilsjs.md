@@ -5,7 +5,7 @@ type: feature
 priority: baja
 branch: feature/crear-funcion-slugify-en-srcutilsjs
 labels: []
-status: in_progress
+status: done
 ---
 # Descripción
 crear función slugify en src/utils.js
