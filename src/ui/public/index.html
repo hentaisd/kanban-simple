@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI-Kanban</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+
+  <!-- HEADER -->
+  <header class="header">
+    <div class="header-title">
+      <span class="header-logo">🤖</span>
+      <span>AI-Kanban</span>
+    </div>
+    <div class="header-actions">
+      <span class="status-dot" id="statusDot" title="Sincronizado"></span>
+      <span style="font-size:0.75rem; color: var(--text-muted)" id="statusText">En vivo</span>
+      <button class="btn btn-ghost btn-sm" id="notifBtn" onclick="requestNotificationPermission()" title="Activar notificaciones">🔔</button>
+      <button class="btn btn-ghost btn-sm" onclick="toggleMetrics()" title="Métricas">📊</button>
+      <button class="btn btn-primary btn-sm" onclick="openCreateModal()">+ Nueva tarea</button>
+    </div>
+  </header>
+
+  <!-- FILTER BAR -->
+  <div class="filter-bar">
+    <span class="filter-label">Filtrar:</span>
+    <button class="filter-chip active" data-filter="all" onclick="setFilter('all', this)">Todas</button>
+    <button class="filter-chip" data-filter="feature" onclick="setFilter('feature', this)">Feature</button>
+    <button class="filter-chip" data-filter="fix" onclick="setFilter('fix', this)">Fix</button>
+    <button class="filter-chip" data-filter="bug" onclick="setFilter('bug', this)">Bug</button>
+    <span style="margin-left: auto; font-size: 0.75rem; color: var(--text-muted)" id="taskCount">0 tareas</span>
+  </div>
+
+  <!-- PANEL MÉTRICAS (colapsable) -->
+  <div class="metrics-panel" id="metricsPanel" style="display:none">
+    <div class="metrics-grid" id="metricsGrid">
+      <div class="metric-card">
+        <div class="metric-value" id="m-total">—</div>
+        <div class="metric-label">Total tareas</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-value" id="m-done">—</div>
+        <div class="metric-label">Completadas</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-value" id="m-avgTime">—</div>
+        <div class="metric-label">Tiempo promedio</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-value" id="m-avgIter">—</div>
+        <div class="metric-label">Iteraciones promedio</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-value" id="m-inprogress">—</div>
+        <div class="metric-label">En progreso</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-value" id="m-review">—</div>
+        <div class="metric-label">En review</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- BOARD -->
+  <div class="board" id="board">
+    <!-- Las columnas se generan dinámicamente desde app.js -->
+  </div>
+
+  <!-- MODAL: CREAR/EDITAR TAREA -->
+  <div class="modal-overlay" id="taskModal">
+    <div class="modal">
+      <div class="modal-header">
+        <span class="modal-title" id="modalTitle">Nueva Tarea</span>
+        <button class="modal-close" onclick="closeModal('taskModal')">×</button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="taskId">
+        <div class="form-group">
+          <label class="form-label">Título *</label>
+          <input type="text" class="form-input" id="taskTitle" placeholder="Ej: Crear sistema de autenticación">
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">Tipo</label>
+            <select class="form-select" id="taskType">
+              <option value="feature">Feature</option>
+              <option value="fix">Fix</option>
+              <option value="bug">Bug</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Prioridad</label>
+            <select class="form-select" id="taskPriority">
+              <option value="alta">🔴 Alta</option>
+              <option value="media" selected>🟡 Media</option>
+              <option value="baja">🟢 Baja</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Columna inicial</label>
+          <select class="form-select" id="taskColumn">
+            <option value="backlog" selected>Backlog</option>
+            <option value="todo">Todo</option>
+            <option value="in_progress">In Progress</option>
+            <option value="review">Review</option>
+            <option value="done">Done</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Etiquetas (separadas por coma)</label>
+          <input type="text" class="form-input" id="taskLabels" placeholder="auth, ui, backend">
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">Depende de (IDs, coma)</label>
+            <input type="text" class="form-input" id="taskDependsOn" placeholder="001, 002">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Proyecto (path, opcional)</label>
+            <input type="text" class="form-input" id="taskProjectPath" placeholder="/ruta/al/proyecto">
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Descripción (Markdown)</label>
+          <textarea class="form-textarea" id="taskContent" placeholder="# Descripción&#10;Describe la tarea...&#10;&#10;# Criterios de aceptación&#10;- criterio 1&#10;- criterio 2"></textarea>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="closeModal('taskModal')">Cancelar</button>
+        <button class="btn btn-danger btn-sm" id="deleteBtn" style="display:none" onclick="confirmDeleteTask()">Eliminar</button>
+        <button class="btn btn-primary" onclick="saveTask()">Guardar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: DETALLE TAREA (con tabs) -->
+  <div class="modal-overlay" id="detailModal">
+    <div class="modal modal-wide">
+      <div class="modal-header">
+        <span class="modal-title" id="detailTitle">Detalle de Tarea</span>
+        <button class="modal-close" onclick="closeModal('detailModal')">×</button>
+      </div>
+      <!-- TABS -->
+      <div class="task-tabs">
+        <button class="task-tab active" data-tab="detail" onclick="switchTab('detail', this)">📋 Detalle</button>
+        <button class="task-tab" data-tab="history" onclick="switchTab('history', this)">📜 Historial</button>
+        <button class="task-tab" data-tab="diff" onclick="switchTab('diff', this)">🔀 Diff</button>
+      </div>
+      <div class="modal-body" id="detailBody">
+      </div>
+      <div id="historyBody" style="display:none; padding:20px 24px; max-height:400px; overflow-y:auto"></div>
+      <div id="diffBody" style="display:none; padding:20px 24px"></div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="closeModal('detailModal')">Cerrar</button>
+        <button class="btn btn-primary btn-sm" id="editFromDetail" onclick="">Editar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- TOASTS -->
+  <div class="toast-container" id="toastContainer"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
