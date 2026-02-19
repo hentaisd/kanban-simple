@@ -21,7 +21,11 @@ const { executeTask, detectAvailableEngine } = require('./ai-executor');
 const { saveExecution } = require('./history');
 const GitService = require('../git/gitService');
 
+const fs = require('fs');
 const KANBAN_ROOT = path.resolve(__dirname, '../../');
+const KANBAN_DIR = path.join(KANBAN_ROOT, 'kanban');
+const ACTIVE_PROJECT_FILE = path.join(KANBAN_DIR, '.active-project.json');
+const PROJECTS_FILE = path.join(KANBAN_DIR, 'projects.json');
 
 // ─────────────────────────────────────────────
 // CARGAR CONFIG
@@ -56,30 +60,47 @@ function loadConfig(overrides = {}) {
 }
 
 /**
- * Resuelve el projectPath de una tarea.
- * Orden: task.projectPath (nombre o ruta) → defaultProject → config.projectPath
+ * Lee el proyecto activo y resuelve su path desde projects.json
  */
-function resolveProjectPath(task, config) {
-  const ref = task.projectPath;
-
-  if (ref) {
-    // Si es un nombre registrado en projects, devolver su path
-    if (config.projects[ref]) {
-      return config.projects[ref].path;
+function readActiveProject() {
+  try {
+    if (fs.existsSync(ACTIVE_PROJECT_FILE)) {
+      const { name } = JSON.parse(fs.readFileSync(ACTIVE_PROJECT_FILE, 'utf8'));
+      if (name && fs.existsSync(PROJECTS_FILE)) {
+        const list = JSON.parse(fs.readFileSync(PROJECTS_FILE, 'utf8'));
+        return list.find(p => p.name === name) || null;
+      }
     }
-    // Si es una ruta absoluta, usarla directamente
-    if (path.isAbsolute(ref)) {
-      return ref;
-    }
-  }
+  } catch {}
+  return null;
+}
 
-  // Usar defaultProject si está configurado
+/**
+ * Resuelve el projectPath a usar.
+ * Orden: proyecto activo (UI/projects.json) → defaultProject (config) → projectPath global
+ */
+function resolveProjectPath(config) {
+  const active = readActiveProject();
+  if (active?.path) return active.path;
+
   if (config.defaultProject && config.projects[config.defaultProject]) {
     return config.projects[config.defaultProject].path;
   }
-
-  // Fallback al projectPath global
   return config.projectPath;
+}
+
+/**
+ * Resuelve la config git para el proyecto activo.
+ */
+function resolveGitConfig(config) {
+  const active = readActiveProject();
+  const projectGit = active?.git || {};
+  return {
+    enabled:       projectGit.enabled       ?? config.git.enabled,
+    defaultBranch: projectGit.defaultBranch ?? config.git.defaultBranch,
+    autoPush:      projectGit.autoPush      ?? config.git.autoPush,
+    autoMerge:     projectGit.autoMerge     ?? config.git.autoMerge,
+  };
 }
 
 /**
@@ -162,8 +183,8 @@ function updateTaskFields(taskId, fields) {
 async function processTask(task, config) {
   const { engine } = config;
 
-  const taskProjectPath = resolveProjectPath(task, config);
-  const gitCfg = resolveGitConfig(task, config);
+  const taskProjectPath = resolveProjectPath(config);
+  const gitCfg = resolveGitConfig(config);
 
   console.log(chalk.blue.bold(`\n${'═'.repeat(62)}`));
   console.log(chalk.blue.bold(`  🚀 TAREA #${task.id}: ${task.title}`));

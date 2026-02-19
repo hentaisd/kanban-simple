@@ -108,34 +108,108 @@ function sendOSNotification(title, body) {
 async function loadProjects() {
   try {
     const res = await fetch('/api/projects');
-    const { success, data, defaultProject } = await res.json();
+    const { success, data, active } = await res.json();
     if (!success) return;
 
     registeredProjects = data;
-    populateProjectSelect(defaultProject);
+
+    const sel = document.getElementById('projectSelector');
+    // Limpiar y rellenar
+    sel.innerHTML = '<option value="">Sin proyecto</option>';
+
+    for (const proj of data) {
+      const opt = document.createElement('option');
+      opt.value = proj.name;
+      opt.textContent = proj.name;
+      opt.title = proj.path;
+      sel.appendChild(opt);
+    }
+
+    if (active) sel.value = active;
   } catch {}
 }
 
-function populateProjectSelect(defaultProject) {
-  const select = document.getElementById('taskProjectPath');
-  if (!select) return;
+async function setActiveProject(name) {
+  try {
+    await fetch('/api/projects/active', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    });
+    showToast(name ? `Proyecto activo: ${name}` : 'Sin proyecto activo', 'success');
+  } catch {}
+}
 
-  // Limpiar opciones excepto la primera (sin proyecto)
-  while (select.options.length > 1) select.remove(1);
+function openProjectsModal() {
+  renderProjectsList();
+  openModal('projectsModal');
+}
 
-  for (const proj of registeredProjects) {
-    const opt = document.createElement('option');
-    opt.value = proj.name;
-    opt.textContent = proj.isDefault
-      ? `${proj.name} (por defecto) — ${proj.path}`
-      : `${proj.name} — ${proj.path}`;
-    if (proj.isDefault && !defaultProject) opt.selected = true;
-    select.appendChild(opt);
+function renderProjectsList() {
+  const el = document.getElementById('projectsList');
+  if (!registeredProjects.length) {
+    el.innerHTML = '<div style="color:var(--text-muted);font-size:0.85rem;padding:8px 0">Sin proyectos registrados todavía.</div>';
+    return;
   }
 
-  // Si solo hay un proyecto, seleccionarlo automáticamente
-  if (registeredProjects.length === 1) {
-    select.value = registeredProjects[0].name;
+  const activeVal = document.getElementById('projectSelector').value;
+
+  el.innerHTML = registeredProjects.map(p => `
+    <div class="project-row">
+      <div class="project-row-info">
+        <span class="project-row-name">${escapeHtml(p.name)}</span>
+        ${p.name === activeVal ? '<span class="badge badge-feature" style="font-size:0.6rem">activo</span>' : ''}
+        <span class="project-row-path">${escapeHtml(p.path)}</span>
+      </div>
+      <button class="btn btn-danger btn-sm" onclick="removeProject('${escapeHtml(p.name)}')">Eliminar</button>
+    </div>
+  `).join('');
+}
+
+async function addProject() {
+  const name = document.getElementById('newProjectName').value.trim();
+  const projPath = document.getElementById('newProjectPath').value.trim();
+  const branch = document.getElementById('newProjectBranch').value.trim() || 'main';
+
+  if (!name || !projPath) {
+    showToast('Nombre y ruta son requeridos', 'error');
+    return;
+  }
+
+  try {
+    const res = await fetch('/api/projects', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, path: projPath, git: { defaultBranch: branch } }),
+    });
+    const { success, error } = await res.json();
+    if (!success) throw new Error(error);
+
+    // Limpiar form
+    document.getElementById('newProjectName').value = '';
+    document.getElementById('newProjectPath').value = '';
+    document.getElementById('newProjectBranch').value = '';
+
+    showToast(`Proyecto "${name}" agregado`, 'success');
+    await loadProjects();
+    renderProjectsList();
+  } catch (err) {
+    showToast(`Error: ${err.message}`, 'error');
+  }
+}
+
+async function removeProject(name) {
+  if (!confirm(`¿Eliminar el proyecto "${name}"?`)) return;
+  try {
+    const res = await fetch(`/api/projects/${encodeURIComponent(name)}`, { method: 'DELETE' });
+    const { success, error } = await res.json();
+    if (!success) throw new Error(error);
+
+    showToast(`Proyecto "${name}" eliminado`, 'info');
+    await loadProjects();
+    renderProjectsList();
+  } catch (err) {
+    showToast(`Error: ${err.message}`, 'error');
   }
 }
 
@@ -449,10 +523,6 @@ function openCreateModal(defaultColumn = 'backlog') {
   document.getElementById('taskColumn').value = defaultColumn;
   document.getElementById('taskLabels').value = '';
   document.getElementById('taskDependsOn').value = '';
-  // Seleccionar proyecto por defecto
-  const sel = document.getElementById('taskProjectPath');
-  const defProj = registeredProjects.find(p => p.isDefault);
-  sel.value = defProj ? defProj.name : (registeredProjects.length === 1 ? registeredProjects[0].name : '');
   document.getElementById('taskContent').value = '# Descripción\n\n\n# Criterios de aceptación\n- ';
   document.getElementById('deleteBtn').style.display = 'none';
 
@@ -475,11 +545,6 @@ async function openEditModal(taskId) {
     document.getElementById('taskColumn').value = task.column || task.status || 'backlog';
     document.getElementById('taskLabels').value = (task.labels || []).join(', ');
     document.getElementById('taskDependsOn').value = (task.dependsOn || []).join(', ');
-    // Restaurar proyecto: si es un nombre registrado úsalo, si no déjalo vacío
-    const projSel = document.getElementById('taskProjectPath');
-    const projVal = task.projectPath || '';
-    const isRegistered = registeredProjects.some(p => p.name === projVal);
-    projSel.value = isRegistered ? projVal : '';
     document.getElementById('taskContent').value = task.content || '';
     document.getElementById('deleteBtn').style.display = 'inline-block';
 
@@ -688,13 +753,8 @@ async function saveTask() {
     return;
   }
 
-  const dependsOnRaw = document.getElementById('taskDependsOn').value;
-  const dependsOn = dependsOnRaw
-    .split(',')
-    .map(s => s.trim())
-    .filter(Boolean);
-
-  const projectPath = document.getElementById('taskProjectPath').value.trim() || null;
+  const dependsOn = document.getElementById('taskDependsOn').value
+    .split(',').map(s => s.trim()).filter(Boolean);
 
   const data = {
     title,
@@ -705,7 +765,6 @@ async function saveTask() {
       .split(',').map(l => l.trim()).filter(Boolean),
     content: document.getElementById('taskContent').value,
     dependsOn,
-    projectPath,
   };
 
   try {

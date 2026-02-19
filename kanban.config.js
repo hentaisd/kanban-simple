@@ -24,11 +24,15 @@ module.exports = {
   //   },
   //   defaultProject: 'mi-app',
   //
-  projects: {},
+  projects: {
+    'kanban-simple': {
+      path: '/home/phantom/Documents/proyectos/kanban-simple',
+      git: { defaultBranch: 'main', autoPush: false, autoMerge: true },
+    },
+  },
 
   // Proyecto por defecto cuando una tarea no especifica ninguno.
-  // Si está vacío, se usa `projectPath` como fallback.
-  defaultProject: '',
+  defaultProject: 'kanban-simple',
 
   // ─── PROYECTO LEGACY (fallback si no usas `projects`) ───────────────────
   // Se usa solo cuando `projects` está vacío o `defaultProject` no está seteado.

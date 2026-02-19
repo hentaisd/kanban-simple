@@ -19,6 +19,10 @@
     <div class="header-actions">
       <span class="status-dot" id="statusDot" title="Sincronizado"></span>
       <span style="font-size:0.75rem; color: var(--text-muted)" id="statusText">En vivo</span>
+      <select class="project-selector" id="projectSelector" onchange="setActiveProject(this.value)" title="Proyecto activo">
+        <option value="">Sin proyecto</option>
+      </select>
+      <button class="btn btn-ghost btn-sm" onclick="openProjectsModal()" title="Gestionar proyectos">⚙️</button>
       <button class="btn btn-ghost btn-sm" id="notifBtn" onclick="requestNotificationPermission()" title="Activar notificaciones">🔔</button>
       <button class="btn btn-ghost btn-sm" onclick="toggleMetrics()" title="Métricas">📊</button>
       <button class="btn btn-primary btn-sm" onclick="openCreateModal()">+ Nueva tarea</button>
@@ -115,17 +119,9 @@
           <label class="form-label">Etiquetas (separadas por coma)</label>
           <input type="text" class="form-input" id="taskLabels" placeholder="auth, ui, backend">
         </div>
-        <div class="form-row">
-          <div class="form-group">
-            <label class="form-label">Depende de (IDs, coma)</label>
-            <input type="text" class="form-input" id="taskDependsOn" placeholder="001, 002">
-          </div>
-          <div class="form-group">
-            <label class="form-label">Proyecto</label>
-            <select class="form-select" id="taskProjectPath">
-              <option value="">— Sin proyecto específico —</option>
-            </select>
-          </div>
+        <div class="form-group">
+          <label class="form-label">Depende de (IDs, coma)</label>
+          <input type="text" class="form-input" id="taskDependsOn" placeholder="001, 002">
         </div>
         <div class="form-group">
           <label class="form-label">Descripción (Markdown)</label>
@@ -160,6 +156,41 @@
       <div class="modal-footer">
         <button class="btn btn-secondary" onclick="closeModal('detailModal')">Cerrar</button>
         <button class="btn btn-primary btn-sm" id="editFromDetail" onclick="">Editar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: GESTIONAR PROYECTOS -->
+  <div class="modal-overlay" id="projectsModal">
+    <div class="modal">
+      <div class="modal-header">
+        <span class="modal-title">Proyectos</span>
+        <button class="modal-close" onclick="closeModal('projectsModal')">×</button>
+      </div>
+      <div class="modal-body">
+        <!-- Lista de proyectos existentes -->
+        <div id="projectsList" style="margin-bottom:20px"></div>
+        <!-- Formulario agregar nuevo -->
+        <div style="border-top:1px solid var(--border);padding-top:16px">
+          <div style="font-size:0.8rem;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:12px">Agregar proyecto</div>
+          <div class="form-group">
+            <label class="form-label">Nombre (clave única)</label>
+            <input type="text" class="form-input" id="newProjectName" placeholder="mi-app">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Ruta absoluta del proyecto</label>
+            <input type="text" class="form-input" id="newProjectPath" placeholder="/home/usuario/proyectos/mi-app">
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label">Branch principal</label>
+              <input type="text" class="form-input" id="newProjectBranch" placeholder="main">
+            </div>
+            <div class="form-group" style="display:flex;align-items:flex-end">
+              <button class="btn btn-primary" style="width:100%" onclick="addProject()">Agregar</button>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   </div>

@@ -557,6 +557,25 @@ body {
   .column { flex: 0 0 260px; }
 }
 
+/* ─── PROJECT SELECTOR ─── */
+.project-selector {
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 0.8rem;
+  font-weight: 600;
+  padding: 5px 10px;
+  cursor: pointer;
+  max-width: 200px;
+  transition: border-color 0.15s;
+}
+.project-selector:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.project-selector option { background: var(--bg-2); }
+
 /* ─── HEADER GHOST BUTTON ─── */
 .btn-ghost {
   background: transparent;
@@ -567,6 +586,45 @@ body {
   background: var(--bg-3);
   border-color: var(--border);
   color: var(--text);
+}
+
+/* ─── PROJECT ROW ─── */
+.project-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin-bottom: 8px;
+}
+
+.project-row-info {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.project-row-name {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.project-row-path {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  font-family: monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 380px;
 }
 
 /* ─── BLOCKED BADGE ─── */

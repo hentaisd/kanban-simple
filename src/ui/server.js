@@ -200,27 +200,130 @@ app.delete('/api/tasks/:id', async (req, res) => {
   }
 });
 
+// ─────────────────────────────────────────────
+// GESTIÓN DE PROYECTOS (persiste en projects.json)
+// ─────────────────────────────────────────────
+const PROJECTS_FILE = path.join(KANBAN_PATH, 'projects.json');
+const ACTIVE_PROJECT_FILE = path.join(KANBAN_PATH, '.active-project.json');
+
+function readProjectsFile() {
+  try {
+    if (fs.existsSync(PROJECTS_FILE)) {
+      return JSON.parse(fs.readFileSync(PROJECTS_FILE, 'utf8'));
+    }
+  } catch {}
+  // Fallback: leer desde kanban.config.js
+  try {
+    delete require.cache[require.resolve('../../kanban.config.js')];
+    const cfg = require('../../kanban.config.js');
+    if (cfg.projects && Object.keys(cfg.projects).length > 0) {
+      return Object.entries(cfg.projects).map(([name, data]) => ({
+        name,
+        path: data.path,
+        git: data.git || {},
+      }));
+    }
+  } catch {}
+  return [];
+}
+
+function writeProjectsFile(list) {
+  fs.mkdirSync(path.dirname(PROJECTS_FILE), { recursive: true });
+  fs.writeFileSync(PROJECTS_FILE, JSON.stringify(list, null, 2), 'utf8');
+}
+
+function readActiveProject() {
+  try {
+    if (fs.existsSync(ACTIVE_PROJECT_FILE)) {
+      return JSON.parse(fs.readFileSync(ACTIVE_PROJECT_FILE, 'utf8'));
+    }
+  } catch {}
+  return null;
+}
+
+function writeActiveProject(data) {
+  fs.writeFileSync(ACTIVE_PROJECT_FILE, JSON.stringify(data, null, 2), 'utf8');
+}
+
 /**
- * GET /api/projects - Lista los proyectos registrados en kanban.config.js
+ * GET /api/projects - Lista los proyectos
  */
 app.get('/api/projects', (req, res) => {
   try {
-    let cfg = {};
-    try {
-      delete require.cache[require.resolve('../../kanban.config.js')];
-      cfg = require('../../kanban.config.js');
-    } catch {}
+    const list = readProjectsFile();
+    const active = readActiveProject();
+    const activeName = active?.name || (list[0]?.name ?? '');
+    res.json({ success: true, data: list, active: activeName });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
 
-    const projects = cfg.projects || {};
-    const defaultProject = cfg.defaultProject || '';
+/**
+ * POST /api/projects - Agregar un proyecto nuevo
+ */
+app.post('/api/projects', (req, res) => {
+  try {
+    const { name, path: projectPath, git } = req.body;
+    if (!name || !projectPath) {
+      return res.status(400).json({ success: false, error: 'name y path son requeridos' });
+    }
 
-    const list = Object.entries(projects).map(([name, data]) => ({
-      name,
-      path: data.path,
-      isDefault: name === defaultProject,
-    }));
+    const list = readProjectsFile();
+    if (list.find(p => p.name === name)) {
+      return res.status(400).json({ success: false, error: `El proyecto "${name}" ya existe` });
+    }
 
-    res.json({ success: true, data: list, defaultProject });
+    const newProject = { name, path: projectPath, git: git || {} };
+    list.push(newProject);
+    writeProjectsFile(list);
+
+    // Si es el primero, activarlo automáticamente
+    if (list.length === 1) {
+      writeActiveProject({ name, setAt: new Date().toISOString() });
+    }
+
+    broadcastChange('projects:updated');
+    res.status(201).json({ success: true, data: newProject });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * DELETE /api/projects/:name - Eliminar un proyecto
+ */
+app.delete('/api/projects/:name', (req, res) => {
+  try {
+    const list = readProjectsFile();
+    const filtered = list.filter(p => p.name !== req.params.name);
+    if (filtered.length === list.length) {
+      return res.status(404).json({ success: false, error: 'Proyecto no encontrado' });
+    }
+    writeProjectsFile(filtered);
+
+    // Si era el activo, activar el primero disponible
+    const active = readActiveProject();
+    if (active?.name === req.params.name) {
+      writeActiveProject({ name: filtered[0]?.name ?? '', setAt: new Date().toISOString() });
+    }
+
+    broadcastChange('projects:updated');
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * POST /api/projects/active - Cambiar el proyecto activo
+ */
+app.post('/api/projects/active', (req, res) => {
+  try {
+    const { name } = req.body;
+    writeActiveProject({ name: name || '', setAt: new Date().toISOString() });
+    broadcastChange('project:changed', { project: name });
+    res.json({ success: true, active: name });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
