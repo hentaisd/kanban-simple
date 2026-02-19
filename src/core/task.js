@@ -14,16 +14,28 @@ const KANBAN_PATH = process.env.KANBAN_PATH
   : path.resolve(__dirname, '../../kanban');
 
 /**
+ * Retorna la ruta al directorio kanban de un proyecto dado.
+ * Si no se pasa projectPath, retorna el KANBAN_PATH global.
+ * @param {string|null} projectPath - Ruta raíz del proyecto
+ * @returns {string}
+ */
+function getKanbanPath(projectPath) {
+  if (projectPath) return path.join(projectPath, 'kanban');
+  return KANBAN_PATH;
+}
+
+/**
  * Lee un archivo .md y retorna el objeto task
  * @param {string} filePath - Ruta absoluta al archivo .md
+ * @param {string} [kanbanPath] - Ruta base del kanban (para calcular la columna)
  * @returns {Object} - Objeto task con frontmatter + content + meta
  */
-function parseTask(filePath) {
+function parseTask(filePath, kanbanPath = KANBAN_PATH) {
   const raw = fs.readFileSync(filePath, 'utf8');
   const { data, content } = matter(raw);
 
   // Determinar columna actual desde la ruta del archivo
-  const relativePath = path.relative(KANBAN_PATH, filePath);
+  const relativePath = path.relative(kanbanPath, filePath);
   const column = relativePath.split(path.sep)[0];
 
   return {
@@ -76,11 +88,11 @@ function generateFileName(id, title) {
 /**
  * Retorna la ruta a una columna del kanban
  */
-function getColumnPath(column) {
+function getColumnPath(column, kanbanPath = KANBAN_PATH) {
   if (!COLUMNS.includes(column)) {
     throw new Error(`Columna inválida: ${column}. Válidas: ${COLUMNS.join(', ')}`);
   }
-  return path.join(KANBAN_PATH, column);
+  return path.join(kanbanPath, column);
 }
 
 module.exports = {
@@ -89,6 +101,7 @@ module.exports = {
   generateBranchName,
   generateFileName,
   getColumnPath,
+  getKanbanPath,
   COLUMNS,
   KANBAN_PATH,
 };

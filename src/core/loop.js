@@ -16,7 +16,7 @@
 const path = require('path');
 const chalk = require('chalk');
 const { getTasks, moveTask, getTaskById } = require('../kanban/board');
-const { writeTask } = require('./task');
+const { writeTask, getKanbanPath } = require('./task');
 const { executeTask, detectAvailableEngine } = require('./ai-executor');
 const { saveExecution } = require('./history');
 const GitService = require('../git/gitService');
@@ -146,11 +146,11 @@ function wait(seconds) {
  * @param {Object} task - Tarea a verificar
  * @returns {{ ok: boolean, blocking: string[] }} - blocking = IDs que no están en done
  */
-function checkDependencies(task) {
+function checkDependencies(task, kanbanPath) {
   const deps = Array.isArray(task.dependsOn) ? task.dependsOn : [];
   if (deps.length === 0) return { ok: true, blocking: [] };
 
-  const doneTasks = getTasks('done');
+  const doneTasks = getTasks('done', kanbanPath);
   const doneIds = doneTasks.map(t => String(t.id).padStart(3, '0'));
 
   const blocking = deps.filter(depId => {
@@ -165,9 +165,9 @@ function checkDependencies(task) {
 // ACTUALIZAR FRONTMATTER DE TAREA
 // ─────────────────────────────────────────────
 
-function updateTaskFields(taskId, fields) {
+function updateTaskFields(taskId, fields, kanbanPath) {
   try {
-    const found = getTaskById(taskId);
+    const found = getTaskById(taskId, kanbanPath);
     if (!found) return;
     const updated = { ...found.task, ...fields };
     writeTask(updated, found.filePath);
@@ -184,6 +184,7 @@ async function processTask(task, config) {
   const { engine } = config;
 
   const taskProjectPath = resolveProjectPath(config);
+  const kanbanPath = getKanbanPath(taskProjectPath);
   const gitCfg = resolveGitConfig(config);
 
   console.log(chalk.blue.bold(`\n${'═'.repeat(62)}`));
@@ -195,8 +196,8 @@ async function processTask(task, config) {
   console.log(chalk.gray(`  engine: ${chalk.white(engine)}\n`));
 
   // ── PASO 1: todo → in_progress + actualizar startedAt ───
-  moveTask(task.id, 'in_progress');
-  updateTaskFields(task.id, { startedAt: new Date().toISOString() });
+  moveTask(task.id, 'in_progress', kanbanPath);
+  updateTaskFields(task.id, { startedAt: new Date().toISOString() }, kanbanPath);
   console.log(chalk.cyan('  ▶ Estado: in_progress'));
 
   const gitService = new GitService(taskProjectPath);
@@ -272,18 +273,18 @@ async function processTask(task, config) {
 
   // ── PASO 5: mover a done o review + timestamps ───────────
   if (taskResult?.success) {
-    moveTask(task.id, 'done');
+    moveTask(task.id, 'done', kanbanPath);
     updateTaskFields(task.id, {
       completedAt: now,
       iterations: taskResult.iterations || 1,
-    });
+    }, kanbanPath);
     console.log(chalk.green(`\n  ✅ DONE — ${taskResult.summary}`));
     if (taskResult.iterations > 1) {
       console.log(chalk.gray(`     (completado en ${taskResult.iterations} iteraciones)`));
     }
   } else {
-    moveTask(task.id, 'review');
-    updateTaskFields(task.id, { completedAt: now });
+    moveTask(task.id, 'review', kanbanPath);
+    updateTaskFields(task.id, { completedAt: now }, kanbanPath);
     console.log(chalk.yellow(`\n  ⚠  REVIEW — ${taskResult?.reason ?? 'Error desconocido'}`));
   }
 
@@ -340,7 +341,9 @@ async function startLoop(cliOverrides = {}) {
     cycle++;
     console.log(chalk.gray(`\n  [ciclo ${cycle}]  ${new Date().toLocaleTimeString()}`));
 
-    const todoTasks = getTasks('todo');
+    const resolvedProjectPath = resolveProjectPath(config);
+    const loopKanbanPath = getKanbanPath(resolvedProjectPath);
+    const todoTasks = getTasks('todo', loopKanbanPath);
 
     if (todoTasks.length === 0) {
       console.log(chalk.gray('  Sin tareas en TODO.'));
@@ -354,7 +357,7 @@ async function startLoop(cliOverrides = {}) {
     // Buscar la primera tarea sin dependencias bloqueantes
     let taskToProcess = null;
     for (const candidate of todoTasks) {
-      const { ok, blocking } = checkDependencies(candidate);
+      const { ok, blocking } = checkDependencies(candidate, loopKanbanPath);
       if (ok) {
         taskToProcess = candidate;
         break;
@@ -374,9 +377,9 @@ async function startLoop(cliOverrides = {}) {
 
     if (dryRun) {
       console.log(chalk.yellow('  🔍 DRY RUN: se simula sin ejecutar\n'));
-      moveTask(taskToProcess.id, 'in_progress');
+      moveTask(taskToProcess.id, 'in_progress', loopKanbanPath);
       await new Promise(r => setTimeout(r, 1000));
-      moveTask(taskToProcess.id, 'done');
+      moveTask(taskToProcess.id, 'done', loopKanbanPath);
       console.log(chalk.green('  ✅ DONE (simulado)'));
     } else {
       await processTask(taskToProcess, { ...config, engine });

@@ -136,7 +136,9 @@ async function setActiveProject(name) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name }),
     });
-    showToast(name ? `Proyecto activo: ${name}` : 'Sin proyecto activo', 'success');
+    showToast(name ? `Proyecto: ${name}` : 'Sin proyecto activo', 'success');
+    // Recargar tareas del nuevo proyecto inmediatamente
+    await loadTasks(false);
   } catch {}
 }
 
@@ -160,6 +162,7 @@ function renderProjectsList() {
         <span class="project-row-name">${escapeHtml(p.name)}</span>
         ${p.name === activeVal ? '<span class="badge badge-feature" style="font-size:0.6rem">activo</span>' : ''}
         <span class="project-row-path">${escapeHtml(p.path)}</span>
+        <span class="project-row-path" style="color:var(--text-muted);font-size:0.7rem">kanban: ${escapeHtml(p.path)}/kanban</span>
       </div>
       <button class="btn btn-danger btn-sm" onclick="removeProject('${escapeHtml(p.name)}')">Eliminar</button>
     </div>
@@ -182,15 +185,15 @@ async function addProject() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name, path: projPath, git: { defaultBranch: branch } }),
     });
-    const { success, error } = await res.json();
-    if (!success) throw new Error(error);
+    const result = await res.json();
+    if (!result.success) throw new Error(result.error);
 
     // Limpiar form
     document.getElementById('newProjectName').value = '';
     document.getElementById('newProjectPath').value = '';
     document.getElementById('newProjectBranch').value = '';
 
-    showToast(`Proyecto "${name}" agregado`, 'success');
+    showToast(`Proyecto "${name}" agregado. Kanban en: ${result.kanbanPath}`, 'success');
     await loadProjects();
     renderProjectsList();
   } catch (err) {
@@ -223,6 +226,13 @@ function setupSSE() {
     try {
       const data = JSON.parse(event.data);
       if (data.type === 'connected') return;
+
+      // Cambio de proyecto activo → recargar proyectos + tareas
+      if (data.type === 'project:changed' || data.type === 'projects:updated') {
+        loadProjects();
+        loadTasks(false);
+        return;
+      }
 
       loadTasks(false);
 
