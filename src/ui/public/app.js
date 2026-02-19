@@ -34,6 +34,37 @@ document.addEventListener('DOMContentLoaded', () => {
   initNotifications();
 });
 
+// ─────────────────────────────────────────────
+// BANNER DE ESTADO DEL MOTOR IA
+// ─────────────────────────────────────────────
+function updateAIStatusBanner() {
+  const inProgress = allTasks['in_progress'] || [];
+  let banner = document.getElementById('aiBanner');
+
+  if (!banner) {
+    banner = document.createElement('div');
+    banner.id = 'aiBanner';
+    banner.className = 'ai-banner';
+    // Insertar justo antes del board
+    const board = document.getElementById('board');
+    board.parentNode.insertBefore(banner, board);
+  }
+
+  if (inProgress.length === 0) {
+    banner.style.display = 'none';
+    return;
+  }
+
+  const activeProject = document.getElementById('projectSelector').value || 'Sin proyecto';
+  const names = inProgress.map(t => `<strong>#${t.id}</strong> ${escapeHtml(t.title)}`).join(' &nbsp;·&nbsp; ');
+
+  banner.style.display = 'flex';
+  banner.innerHTML = `
+    <span class="ai-banner-dot"></span>
+    <span>Motor IA trabajando &nbsp;|&nbsp; Proyecto: <strong>${escapeHtml(activeProject)}</strong> &nbsp;|&nbsp; ${names}</span>
+  `;
+}
+
 function setupKeyboardShortcuts() {
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
@@ -347,6 +378,7 @@ async function loadTasks(showLoader = true) {
 
     allTasks = data;
     renderBoard();
+    updateAIStatusBanner();
   } catch (err) {
     console.error('Error cargando tareas:', err);
     if (showLoader) showToast('Error cargando tareas', 'error');
