@@ -31,6 +31,8 @@ let registeredProjects = []; // proyectos desde kanban.config.js
 // ─────────────────────────────────────────────
 // INICIALIZACIÓN
 // ─────────────────────────────────────────────
+let loopStatusInterval = null;
+
 document.addEventListener('DOMContentLoaded', () => {
   buildBoard();
   loadTasks();
@@ -41,7 +43,21 @@ document.addEventListener('DOMContentLoaded', () => {
   initNotifications();
   initLoopStatus();
   loadNotifications();
+  startLoopStatusPolling();
 });
+
+// Polling del estado del loop cada 5 segundos
+function startLoopStatusPolling() {
+  if (loopStatusInterval) clearInterval(loopStatusInterval);
+  loopStatusInterval = setInterval(async () => {
+    try {
+      const res = await fetch('/api/loop/status');
+      const data = await res.json();
+      const running = data.status === 'running';
+      setLoopUI(running, data.currentTask);
+    } catch {}
+  }, 5000);
+}
 
 // ─────────────────────────────────────────────
 // SELECCIÓN DE MOTOR IA (Claude / OpenCode)
@@ -90,7 +106,7 @@ async function initLoopStatus() {
     const res = await fetch('/api/loop/status');
     const data = await res.json();
     const running = data.status === 'running';
-    setLoopUI(running);
+    setLoopUI(running, data.currentTask);
     if (running && data.currentTask) {
       addLogLine(`Motor corriendo — tarea activa: #${data.currentTask.id} ${data.currentTask.title}`, 'info');
     }
@@ -132,9 +148,12 @@ async function toggleLoop() {
 let _logPollInterval = null;
 let _lastLogLength = 0;
 
-function setLoopUI(running) {
+function setLoopUI(running, currentTask = null) {
   loopRunning = running;
   const btn = document.getElementById('loopBtn');
+  const indicator = document.getElementById('loopStatusIndicator');
+  const statusText = document.getElementById('loopStatusText');
+  
   if (btn) {
     if (running) {
       btn.textContent = '⏹ Detener IA';
@@ -146,6 +165,23 @@ function setLoopUI(running) {
       btn.title = 'Iniciar motor IA';
     }
   }
+  
+  // Indicador de estado en header
+  if (indicator) {
+    if (running) {
+      indicator.style.display = 'flex';
+      if (currentTask) {
+        statusText.textContent = `Procesando #${currentTask.id}`;
+        statusText.title = currentTask.title;
+      } else {
+        statusText.textContent = 'Motor activo';
+        statusText.title = '';
+      }
+    } else {
+      indicator.style.display = 'none';
+    }
+  }
+  
   // dot en el panel de logs
   const dot = document.getElementById('logStatusDot');
   if (dot) dot.classList.toggle('running', running);

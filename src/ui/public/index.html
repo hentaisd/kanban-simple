@@ -47,6 +47,10 @@
         <button class="engine-btn" id="eng-opencode" onclick="setEngine('opencode')">OpenCode</button>
       </div>
       <div class="loop-controls">
+        <div class="loop-status-indicator" id="loopStatusIndicator" style="display:none">
+          <span class="loop-status-dot"></span>
+          <span class="loop-status-text" id="loopStatusText">Motor activo</span>
+        </div>
         <button class="btn btn-loop btn-sm" id="loopBtn" onclick="toggleLoop()" title="Iniciar/detener motor IA">▶ Iniciar IA</button>
         <select class="loop-mode-select" id="loopMode" title="Modo de ejecución">
           <option value="auto">Automático</option>

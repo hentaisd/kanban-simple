@@ -8,6 +8,9 @@ labels:
   - test
   - integration
 status: in_progress
+completedAt: '2026-02-20T21:22:25.283Z'
+iterations: 2
+retryCount: 0
 ---
 # Descripción
 Tarea de integración test
