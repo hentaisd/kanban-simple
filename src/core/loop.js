@@ -510,20 +510,29 @@ async function processTask(task, config) {
     updateTaskFields(task.id, {
       completedAt: now,
       iterations: taskResult.iterations || 1,
-      lastAttemptAt: now,  // Guardar último intento para retry
+      lastAttemptAt: now,
+      lastError: taskResult.scopeNote || 'Scope incompleto',
+      lastErrorAt: now,
+      lastErrorPhase: 'scope',
     }, kanbanPath);
     console.log(chalk.yellow(`\n  [5/6] SCOPE INCOMPLETO → REVIEW (${elapsed}s)`));
     console.log(chalk.yellow(`         ${taskResult.scopeNote}`));
   } else {
     const currentRetryCount = (task.retryCount || 0) + 1;
+    const errorMsg = taskResult?.reason || taskResult?.error || 'Error desconocido';
+    const errorPhase = taskResult?.failedPhase || taskResult?.phasesRecord?.failedPhase || 'unknown';
     moveTask(task.id, 'review', kanbanPath);
     updateTaskFields(task.id, { 
       completedAt: now,
-      lastAttemptAt: now,  // Guardar último intento para retry
+      lastAttemptAt: now,
       retryCount: currentRetryCount,
+      lastError: errorMsg,
+      lastErrorAt: now,
+      lastErrorPhase: errorPhase,
     }, kanbanPath);
     console.log(chalk.yellow(`\n  [5/6] FALLIDA → REVIEW (${elapsed}s)`));
-    console.log(chalk.yellow(`         Razón: ${taskResult?.reason ?? 'Error desconocido'}`));
+    console.log(chalk.yellow(`         Razón: ${errorMsg}`));
+    console.log(chalk.yellow(`         Fase: ${errorPhase}`));
     console.log(chalk.yellow(`         Reintento: ${currentRetryCount}/${config.loop?.maxRetries || 3}`));
   }
 

@@ -1,54 +1,30 @@
-All 17 tests pass. Now let me compile my review.
+Voy a revisar los archivos implementados para la tarea de notificaciones.
+Déjame verificar que los tests pasan y revisar el HTML para el notification center:
+## Revisión Completada
 
----
+### Resumen de componentes:
 
-## Revisión de Código - Tarea #004: Sistema de Notificaciones Push con WebSockets
+| Componente | Archivo | Estado |
+|------------|---------|--------|
+| NotificationManager | `src/core/notifications.js` | ✅ Correcto |
+| WebSocket Server | `src/ui/server.js:980-998` | ✅ Correcto |
+| REST endpoints | `src/ui/server.js:950-973` | ✅ Correcto |
+| Cliente WS frontend | `src/ui/public/app.js:427-505` | ✅ Con backoff 1s→30s |
+| Notification Center | `app.js:569-707` + `index.html:26-42` | ✅ Correcto |
+| Estilos CSS | `style.css:1395-1562` | ✅ Completos |
+| Tests | `tests/test-notifications.js` | ✅ **17/17 pasando** |
 
-### Archivos revisados:
-- `src/core/notifications.js` (nuevo)
-- `src/ui/server.js` (modificado)
-- `src/ui/public/app.js` (modificado)
-- `src/ui/public/index.html` (modificado)
-- `src/ui/public/style.css` (modificado)
-- `tests/test-notifications.js` (nuevo)
-- `package.json` (modificado)
+### Aspectos verificados:
+- ✅ Tipos: `task:created`, `task:moved`, `task:updated`, `task:deleted`, `task:completed`, `loop:started`, `loop:stopped`, `engine:changed`, `project:changed`, `system`
+- ✅ Prioridades: low, normal, high (alta dispara notificación OS)
+- ✅ Límite de historial: 200 notificaciones
+- ✅ WebSocket primario + SSE fallback
+- ✅ Reconexión con backoff exponencial
+- ✅ Badge de no-leídas en título del navegador
+- ✅ `escapeHtml()` usado consistentemente (seguridad XSS)
+- ✅ Integración con eventos del board (create, move, update, delete, complete)
 
-### Verificación del plan:
+### Issue menor (no bloqueante):
+- `notifications.js:141`: Modificar `wsClients` Set durante iteración — está en try-catch y es aceptable para este caso
 
-| Requisito | Estado |
-|-----------|--------|
-| `src/core/notifications.js` con NotificationManager, historial, tipos, prioridades, mark-read | OK |
-| `ws` agregado a package.json | OK |
-| WebSocketServer sobre http.Server existente en server.js | OK |
-| Instanciar NotificationManager | OK |
-| `broadcastChange()` usa `notifications.broadcast()` + SSE fallback | OK |
-| `GET /api/notifications` | OK |
-| `PUT /api/notifications/read` | OK |
-| WebSocket como transporte primario con fallback SSE en app.js | OK |
-| Notification Center con historial, badge, reconexión backoff | OK |
-| Panel dropdown en index.html junto al bell icon | OK |
-| Estilos del notification center en style.css | OK |
-| Tests del NotificationManager | OK (17/17 pasan) |
-
-### Calidad del código:
-
-**Positivo:**
-- `notifications.js` es limpio, bien encapsulado, con historial limitado a 200 entradas
-- El SSE se mantiene como fallback funcional, no se rompe
-- El WebSocket tiene reconexión con backoff exponencial (1s -> 30s max)
-- El `broadcastChange()` en server.js envía por ambos canales (SSE + WS) correctamente
-- Cada acción CRUD en el server emite notificaciones tipadas con metadata
-- El frontend maneja correctamente los 4 tipos de eventos WS: `notification`, `notification:read`, `notification:allRead`, `board:change`
-- Tests cubren todos los escenarios: CRUD, limites, broadcast, clientes desconectados, prioridades, IDs secuenciales
-- Click fuera del dropdown lo cierra, Escape también
-- `escapeHtml()` se usa consistentemente en el render de notificaciones (sin XSS)
-- El `markRead` en el servidor emite broadcast para sincronizar múltiples clientes
-
-**Sin problemas detectados:**
-- No hay bugs de lógica
-- No hay vulnerabilidades de seguridad (escaping correcto, sin inyecciones)
-- Las convenciones del proyecto se respetan (mismo estilo, misma estructura)
-- La funcionalidad existente (SSE, drag&drop, filtros, modales) no se rompió
-- El protocolo WS/wss se selecciona correctamente según `location.protocol`
-
-REVIEW: aprobado - Implementación completa y sólida. NotificationManager bien encapsulado, WebSocket con fallback SSE correcto, UI del notification center funcional, 17 tests pasan, sin bugs ni vulnerabilidades detectadas.
+REVIEW: aprobado - Implementación sólida y completa, todos los tests pasan, arquitectura limpia con separación de responsabilidades

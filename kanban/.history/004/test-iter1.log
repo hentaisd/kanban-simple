@@ -1,32 +1,4 @@
-## Resumen de verificación
-
-### Tests ejecutados
-
-| Suite | Resultado |
-|---|---|
-| `tests/test-notifications.js` | **17/17 pasados** |
-| `tests/test-full-flow.js` | **32/32 pasados** |
-| `tests/test-loop-simulation.js` | **12/12 pasados** (todas las assertions OK) |
-| `npm test` (utils) | **12/12 pasados** |
-
-### Verificación de criterios de aceptación
-
-| Criterio | Estado |
-|---|---|
-| **WebSocket server** (`ws` v8.19.0) | `server.js:980` - `WebSocketServer` en `/ws` |
-| **NotificationManager** | `notifications.js` - CRUD completo, tipos, prioridades, broadcast |
-| **Push notifications** | Broadcast a clientes WS al crear/mover/actualizar/eliminar tareas |
-| **API REST de notificaciones** | `GET /api/notifications`, `PUT /api/notifications/read` |
-| **Frontend WebSocket client** | `app.js:427-505` - Conexión WS con backoff exponencial + fallback SSE |
-| **Notification Center UI** | `index.html` - Bell icon, badge, dropdown con listado, mark-read |
-| **CSS estilos** | `style.css` - 30+ reglas para `.notif-*` |
-| **Tests** | 17 tests unitarios del NotificationManager |
-| **Documentación** | JSDoc en todas las funciones principales |
-
-### Componentes verificados
-
-1. **Backend**: `NotificationManager` con historial en memoria, `ws` package, WebSocketServer integrado en HTTP server, endpoints REST
-2. **Frontend**: WebSocket con reconexión automática (backoff exponencial), fallback a SSE, notification center dropdown, badge de no-leidas, OS notifications para prioridad alta
-3. **Integración**: Cada operación CRUD del tablero genera notificación push (crear, mover, actualizar, eliminar tarea)
-
-TESTS: ok - 73 tests totales pasaron (17 notificaciones + 32 full-flow + 12 loop + 12 utils). WebSocket push notifications implementado con NotificationManager, API REST, frontend con reconexión automática y fallback SSE, notification center UI con badge y mark-read.
+Ejecuto los tests de notificaciones y el test general:
+Los tests pasan. Reviso la implementación de WebSocket y el módulo de notificaciones:
+Reviso el frontend WebSocket:
+TESTS: ok - 17/17 tests de NotificationManager pasaron (crear, almacenar, límites, markRead, broadcast WebSocket, broadcastChange, prioridades, tipos). 12/12 tests de utils también pasaron. La implementación WebSocket está completa en backend (notifications.js + server.js) y frontend (app.js con reconexión y fallback SSE). Código documentado con JSDoc.

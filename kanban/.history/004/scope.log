@@ -1,19 +1,18 @@
-## Resumen de Validación
+Voy a validar la implementación de la tarea #004 verificando los archivos clave y contrastando contra los criterios de aceptación.
+Verificación completada. Todos los componentes están implementados y funcionando:
 
-### Criterios verificados:
+| Criterio | Estado | Evidencia |
+|----------|--------|-----------|
+| Funcionalidad implementada | ✅ | NotificationManager (157 líneas), WS en `/ws`, SSE fallback, REST endpoints |
+| Tests pasan | ✅ | **17/17** tests unitarios ejecutados exitosamente |
+| Código documentado | ✅ | JSDoc en métodos, comentarios de sección |
 
-| Criterio | Estado | Detalle |
-|----------|--------|---------|
-| Funcionalidad implementada y funcionando | OK | NotificationManager completo, WebSocketServer en /ws, endpoints REST, cliente WS con fallback SSE, Notification Center UI |
-| Tests pasan correctamente | OK | 17/17 tests pasan (create, store, limit, markRead, markAllRead, broadcast WS, prioridades, meta, IDs, tipos) |
-| Código documentado | OK | JSDoc en métodos públicos, secciones comentadas en server.js y app.js |
+**Integración verificada:**
+- `notifications` instanciado en `server.js:118`
+- `broadcastChange()` envía por SSE + WebSocket simultáneamente
+- Cliente WS maneja todos los eventos con reconexión exponencial 1s→30s
+- SSE `/api/events` como fallback si WS falla
 
-### Integración verificada:
-- `ws` ^8.19.0 en package.json
-- WebSocketServer montado sobre el mismo http.Server Express
-- `broadcastChange()` alimenta tanto SSE como WS
-- Todas las operaciones CRUD de tareas generan notificaciones tipadas
-- SSE preservado como fallback funcional
-- UI: bell icon con badge, dropdown panel, mark-all-read, OS notifications para prioridad alta, click-outside para cerrar, Escape key
+El archivo `.project-context.md` ya refleja correctamente la tarea #004. No se requieren cambios adicionales.
 
-SCOPE: ok - Los 3 criterios de aceptación se verificaron y cumplen: (1) sistema de notificaciones push con WebSocket completo (NotificationManager, WS server, endpoints REST, cliente WS con fallback SSE y backoff exponencial, Notification Center UI con badge y historial); (2) 17/17 tests unitarios pasan correctamente; (3) código documentado con JSDoc y comentarios de sección
+SCOPE: ok - NotificationManager con WebSocket en /ws, SSE fallback, REST API GET/PUT /api/notifications, cliente con backoff exponencial, Notification Center UI con badge, notificaciones OS para alta prioridad, 17/17 tests pasando - todos los criterios verificados y cumplidos

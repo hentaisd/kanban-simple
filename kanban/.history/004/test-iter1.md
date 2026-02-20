@@ -1,12 +1,12 @@
 # Tests — Tarea #004 (iter 1)
 
 **Resultado:** OK
-**Detalle:** 73 tests totales pasaron (17 notificaciones + 32 full-flow + 12 loop + 12 utils). WebSocket push notifications implementado con NotificationManager, API REST, frontend con reconexión automática y fallback SSE, notification center UI con badge y mark-read.
+**Detalle:** 17/17 tests de NotificationManager pasaron (crear, almacenar, límites, markRead, broadcast WebSocket, broadcastChange, prioridades, tipos). 12/12 tests de utils también pasaron. La implementación WebSocket está completa en backend (notifications.js + server.js) y frontend (app.js con reconexión y fallback SSE). Código documentado con JSDoc.
 
 **Métricas:**
-- Duración: 76s
+- Duración: 53s
 - ExitCode: 0
-- Output: 1,884 chars
+- Output: 526 chars
 
 ---
-_Generado: 2026-02-20T20:03:02.735Z_
+_Generado: 2026-02-20T20:31:52.541Z_

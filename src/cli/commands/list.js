@@ -26,12 +26,20 @@ const COLUMN_COLORS = {
   done: chalk.green,
 };
 
-function formatTask(task) {
+function formatTask(task, showErrors = false) {
   const typeColor = TYPE_COLORS[task.type] || chalk.white;
   const priorityColor = PRIORITY_COLORS[task.priority] || chalk.white;
   const labels = task.labels && task.labels.length > 0
     ? ` [${task.labels.map(l => chalk.magenta(l)).join(', ')}]`
     : '';
+  
+  let errorIndicator = '';
+  if (showErrors && task.lastError && task.status === 'review') {
+    const truncatedError = task.lastError.length > 40 
+      ? task.lastError.substring(0, 40) + '...' 
+      : task.lastError;
+    errorIndicator = chalk.red(`\n       ⚠️ ${truncatedError}`);
+  }
 
   return [
     `  ${chalk.cyan(task.id.toString().padStart(3, '0'))}`,
@@ -39,6 +47,7 @@ function formatTask(task) {
     priorityColor(`[${(task.priority || 'media').padEnd(5)}]`),
     chalk.white(task.title),
     labels,
+    errorIndicator,
   ].join(' ');
 }
 
@@ -55,7 +64,8 @@ function printColumn(column, tasks, labelFilter) {
   if (filtered.length === 0) {
     console.log(chalk.gray('   (vacío)'));
   } else {
-    filtered.forEach(task => console.log(formatTask(task)));
+    const showErrors = column === 'review';
+    filtered.forEach(task => console.log(formatTask(task, showErrors)));
   }
 }
 

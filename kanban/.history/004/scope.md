@@ -1,12 +1,12 @@
 # Scope — Tarea #004: sistema de notificaciones push con WebSockets
 
 **Veredicto:** OK
-**Detalle:** Los 3 criterios de aceptación se verificaron y cumplen: (1) sistema de notificaciones push con WebSocket completo (NotificationManager, WS server, endpoints REST, cliente WS con fallback SSE y backoff exponencial, Notification Center UI con badge y historial); (2) 17/17 tests unitarios pasan correctamente; (3) código documentado con JSDoc y comentarios de sección
+**Detalle:** NotificationManager con WebSocket en /ws, SSE fallback, REST API GET/PUT /api/notifications, cliente con backoff exponencial, Notification Center UI con badge, notificaciones OS para alta prioridad, 17/17 tests pasando - todos los criterios verificados y cumplidos
 
 **Métricas:**
-- Duración: 95s
+- Duración: 106s
 - ExitCode: 0
-- Output: 1,332 chars
+- Output: 1,186 chars
 
 ---
-_Generado: 2026-02-20T20:04:38.170Z_
+_Generado: 2026-02-20T20:33:38.981Z_
