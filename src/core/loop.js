@@ -265,8 +265,13 @@ async function processTask(task, config) {
       const isRepo = await gitService.isGitRepo();
       if (isRepo) {
         gitEnabled = true;
-        const currentBranch = await gitService.getCurrentBranch();
-        console.log(chalk.gray(`  [git] Branch actual antes de empezar: ${currentBranch}`));
+
+        // Verificar estado limpio ANTES de empezar
+        const preCheck = await gitService.verify(gitCfg.defaultBranch);
+        if (preCheck.fixed) {
+          console.log(chalk.yellow(`  [2/6] Git: estado corregido antes de empezar`));
+        }
+        console.log(chalk.gray(`  [git] Pre-check: branch=${preCheck.branch}, clean=${preCheck.clean}`));
 
         try {
           stashed = await gitService.stashIfNeeded();
@@ -307,7 +312,7 @@ async function processTask(task, config) {
       }
     }
 
-    // ── PASO 4: git add + commit + merge ─────────────
+    // ── PASO 4: git — merge si éxito, abort si fallo ─────────────
     if (gitEnabled && taskResult?.success) {
       const prefixes = { feature: 'feat', fix: 'fix', bug: 'fix', architecture: 'chore', chore: 'chore' };
       const prefix = prefixes[task.type] || task.type;
@@ -328,39 +333,36 @@ async function processTask(task, config) {
 
         if (gitCfg.autoMerge) {
           await gitService.checkout(gitCfg.defaultBranch);
-          await gitService.merge(task.branch);
+          const mergeResult = await gitService.merge(task.branch);
           console.log(chalk.cyan(`  [4/6] Git: merge '${task.branch}' → '${gitCfg.defaultBranch}'`));
 
           // Limpiar branch de tarea después del merge exitoso
-          const deleted = await gitService.deleteBranch(task.branch);
-          if (deleted) {
-            console.log(chalk.gray(`  [git] Branch '${task.branch}' eliminado (ya mergeado)`));
-          }
+          await gitService.deleteBranch(task.branch);
+          console.log(chalk.gray(`  [git] Branch '${task.branch}' eliminado`));
         }
 
-        // Confirmar estado final
-        const finalBranch = await gitService.getCurrentBranch();
-        console.log(chalk.gray(`  [git] Branch final: ${finalBranch}`));
+        // Confirmar estado limpio
+        const postCheck = await gitService.verify(gitCfg.defaultBranch);
+        console.log(chalk.gray(`  [git] Post-merge: branch=${postCheck.branch}, clean=${postCheck.clean}`));
       } catch (e) {
-        console.log(chalk.yellow(`  [4/6] Git post-tarea falló: ${e.message}`));
-        // Intentar volver al branch base para no dejar el repo en mal estado
-        try {
-          await gitService.checkout(gitCfg.defaultBranch);
-          console.log(chalk.gray(`  [git] Restaurado a ${gitCfg.defaultBranch} tras error`));
-        } catch {}
+        console.log(chalk.red(`  [4/6] Git post-tarea falló: ${e.message}`));
+        // Merge falló (conflicto u otro) → abort completo
+        console.log(chalk.yellow(`  [4/6] Ejecutando abort completo...`));
+        await gitService.abort(gitCfg.defaultBranch, task.branch);
+        // Marcar como fallida si el merge falla
+        if (taskResult?.success) {
+          taskResult = {
+            ...taskResult,
+            success: false,
+            reason: `Merge a ${gitCfg.defaultBranch} falló: ${e.message}`,
+          };
+        }
       }
-    }
-
-    // ── PASO 4b: rollback si falló ───────────
-    if (gitEnabled && taskResult && !taskResult.success) {
-      try {
-        console.log(chalk.yellow('  [4/6] Tarea fallida — rollback git'));
-        await gitService.rollback(gitCfg.defaultBranch);
-        const rollbackBranch = await gitService.getCurrentBranch();
-        console.log(chalk.gray(`  [git] Rollback completo, ahora en: ${rollbackBranch}`));
-      } catch (e) {
-        console.log(chalk.red(`  [4/6] Rollback falló: ${e.message}`));
-      }
+    } else if (gitEnabled && taskResult && !taskResult.success) {
+      // ── PASO 4b: tarea falló → abort completo (limpieza total) ──
+      console.log(chalk.yellow(`  [4/6] Tarea fallida — abort git (limpieza completa)`));
+      await gitService.abort(gitCfg.defaultBranch, task.branch);
+      console.log(chalk.gray(`  [git] Abort completo — repo limpio en ${gitCfg.defaultBranch}`));
     }
 
   } catch (err) {
@@ -368,10 +370,11 @@ async function processTask(task, config) {
     taskResult = { success: false, reason: err.message, phasesRecord: null };
     if (gitEnabled) {
       try {
-        await gitService.rollback(gitCfg.defaultBranch);
-        console.log(chalk.gray(`  [git] Rollback de emergencia a ${gitCfg.defaultBranch}`));
-      } catch (rollbackErr) {
-        console.log(chalk.red(`  [git] Rollback de emergencia falló: ${rollbackErr.message}`));
+        console.log(chalk.yellow('  [git] Abort de emergencia...'));
+        await gitService.abort(gitCfg.defaultBranch, task.branch);
+        console.log(chalk.gray(`  [git] Abort de emergencia completado`));
+      } catch (abortErr) {
+        console.log(chalk.red(`  [git] Abort de emergencia falló: ${abortErr.message}`));
       }
     }
   }
@@ -385,6 +388,16 @@ async function processTask(task, config) {
       }
     } catch (e) {
       console.log(chalk.yellow(`  [git] No se pudo restaurar stash: ${e.message}`));
+    }
+  }
+
+  // ── PASO 4d: verificación final del repo ────
+  if (gitEnabled) {
+    const finalCheck = await gitService.verify(gitCfg.defaultBranch);
+    if (!finalCheck.clean) {
+      console.log(chalk.red(`  [git] ⚠ Repo NO quedó limpio: branch=${finalCheck.branch}, dirty=${finalCheck.dirty}`));
+      console.log(chalk.yellow(`  [git] Forzando limpieza final...`));
+      await gitService.abort(gitCfg.defaultBranch, task.branch);
     }
   }
 
@@ -501,18 +514,17 @@ async function startLoop(cliOverrides = {}) {
     const resolvedProjectPath = resolveProjectPath(config);
     const loopKanbanPath = getKanbanPath(resolvedProjectPath);
 
-    // Verificar estado git al inicio de cada ciclo
+    // Verificar estado git al inicio de cada ciclo (limpieza completa)
     if (resolvedGit.enabled) {
       try {
         const gs = new GitService(resolvedProjectPath);
         const isRepo = await gs.isGitRepo();
         if (isRepo) {
-          const branch = await gs.getCurrentBranch();
-          if (branch !== resolvedGit.defaultBranch) {
-            console.log(chalk.yellow(`  │ git: en '${branch}' (esperado: '${resolvedGit.defaultBranch}') — corrigiendo`));
-            await gs.checkout(resolvedGit.defaultBranch);
+          const check = await gs.verify(resolvedGit.defaultBranch);
+          if (check.fixed) {
+            console.log(chalk.yellow(`  │ git: estado corregido (branch=${check.branch}, clean=${check.clean})`));
           } else {
-            console.log(chalk.gray(`  │ git: ${branch}`));
+            console.log(chalk.gray(`  │ git: ${check.branch} (limpio)`));
           }
         }
       } catch (gitErr) {
