@@ -1,54 +1,22 @@
-Ahora tengo contexto suficiente. Analicemos la tarea:
+Voy a analizar el estado actual de los tests de integración para entender qué hay implementado.
+## Análisis de Tarea #009
 
-**Análisis de Tarea #009 - "Tarea de integración test"**
+La tarea ya está **100% implementada**:
 
-| Aspecto | Detalle |
-|---------|---------|
-| Tipo | feature |
-| Labels | test, integration |
-| Prioridad | baja |
-| Archivo actual | `kanban/todo/009-tarea-de-integracion-test.md` |
+| Aspecto | Estado |
+|---------|--------|
+| CLI Integration Suite | ✅ 17 tests pasando |
+| Git Integration Suite | ✅ 18 tests pasando |
+| Script npm `test:integration` | ✅ Configurado |
+| Documentación en código | ✅ Headers explicativos |
+| Entorno aislado con cleanup | ✅ `.test-*-integration/` |
 
-**Estructura de tests existentes:**
-- `test-full-flow.js` → flujo completo (git, board, history)
-- `test-loop-simulation.js` → loop de IA simulado
-- `test-notifications.js` → NotificationManager (17 tests)
-- `test-isEmptyPlaceholder.js` → bug fix específico
+**Archivos existentes:**
+- `tests/test-cli-integration.js` (346 líneas) - create, list, move, show, delete, metadata
+- `tests/test-git-integration.js` (262 líneas) - checkout, branch, merge, abort, verify, ensureBranch
 
-**Tests de integración que faltan:**
-1. Test del **servidor UI** (server.js) - endpoints API
-2. Test del **sistema de proyectos** (project-context.js)
-3. Test del **ai-executor** (timeouts, comandos, artefactos)
-4. Test del **gitService** (operaciones git)
-5. Test **end-to-end** del flujo desde UI hasta completar tarea
-
-**Enfoque recomendado:**
-
-Crear un test de integración que verifique:
-- Endpoints del servidor (`/api/tasks`, `/api/history`, etc.)
-- Interacción entre componentes
-- Manejo de errores
-
-**Archivos a tocar:**
-1. **CREAR**: `tests/test-server-api.js` - Tests de endpoints del servidor
-2. **CREAR**: `tests/test-integration.js` - Test end-to-end de integración completa
+**Resultado:** `35 pasaron, 0 fallaron`
 
 ---
 
-PLAN: Crear dos archivos de test de integración:
-
-1. **`tests/test-server-api.js`** - Tests de endpoints REST del servidor:
-   - GET /api/tasks - listar todas las tareas
-   - GET /api/tasks/:column - listar por columna
-   - POST /api/tasks - crear tarea
-   - PUT /api/tasks/:id/move - mover tarea
-   - GET /api/tasks/:id/history - historial de ejecución
-   - GET /api/notifications - listar notificaciones
-
-2. **`tests/test-integration.js`** - Test de integración completo:
-   - Levantar servidor en puerto de prueba
-   - Crear tarea via API
-   - Mover tarea via API
-   - Verificar WebSocket broadcast
-   - Verificar historial
-   - Limpiar después de cada test
+PLAN: **Tarea completa.** No se requieren cambios. Los tests de integración están implementados, documentados y pasando al 100%. Solo falta mover la tarea a `done/` si no lo está ya.

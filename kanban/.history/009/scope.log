@@ -1,9 +1,12 @@
-Voy a verificar la implementación de la tarea #009. Primero, buscaré los archivos de test de integración creados.
-Ahora voy a ejecutar los tests de integración para verificar que funcionan correctamente:
-Verificación completa. Todos los criterios se cumplen:
-- ✅ Funcionalidad implementada: 2 suites de tests (CLI + Git)
-- ✅ Tests pasan: 35/35 (17 CLI + 18 Git)
-- ✅ Código documentado: comentarios descriptivos en ambos archivos
+Voy a verificar la implementación de los tests de integración de la tarea #009.
+Ahora voy a ejecutar los tests de integración para verificar que pasan:
+Todos los tests pasan (17 CLI + 18 Git = 35). Verifico el estado de la tarea y el archivo de contexto:
+La implementación está **COMPLETA**. Verificación de criterios:
+- ✅ Funcionalidad implementada: 35 tests de integración (17 CLI + 18 Git)
+- ✅ Tests pasan correctamente: 35/35 sin fallos
+- ✅ Código documentado: comentarios en cabecera y secciones
+- ✅ Integración correcta: usa módulos reales (`board.js`, `gitService.js`)
 
-Actualizando memoria del proyecto:
-SCOPE: ok - Criterios verificados: (1) Funcionalidad implementada con 2 suites de tests (CLI 17 tests + Git 18 tests), (2) Todos los tests pasan (35/35), (3) Código documentado con comentarios descriptivos. Memoria del proyecto actualizada.
+El archivo `.project-context.md` ya contiene la documentación de los tests de integración (líneas 41-45), por lo que no requiere actualización.
+
+SCOPE: ok - Criterios verificados: 35 tests de integración pasando (17 CLI: create/list/move/show/delete/metadata + 18 Git: checkout/branch/merge/abort/verify/ensureBranch), script npm `test:integration` funcionando, entornos aislados con cleanup automático, código documentado.

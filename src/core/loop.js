@@ -730,4 +730,4 @@ async function startLoop(cliOverrides = {}) {
   console.log(chalk.blue('\n  Motor detenido.\n'));
 }
 
-module.exports = { startLoop, processTask, loadConfig };
+module.exports = { startLoop, processTask, loadConfig, checkRetryableTasks, moveTaskToRetry };

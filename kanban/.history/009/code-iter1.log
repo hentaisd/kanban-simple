@@ -1,7 +1,3 @@
-Voy a explorar la estructura del proyecto para entender cómo implementar los tests de integración.
-Voy a crear dos archivos de test de integración:
-Necesito corregir los tests para usar las funciones correctas:
-Necesito corregir el manejo de tests async. Voy a reescribir el archivo de test de git-integration:
-RESULTADO: completado - Creados dos archivos de test de integración:
-- `tests/test-git-integration.js` - 18 tests para GitService (instantiation, operations, abort, verify, ensureBranch)
-- `tests/test-cli-integration.js` - 17 tests para CLI (help, create, list, move, show, delete, metadata)
+Voy a revisar el estado actual del proyecto y verificar dónde se encuentra esta tarea.
+Los tests pasan. Ahora muevo la tarea a `done/`.
+RESULTADO: completado - Tests de integración ya implementados y pasando (18/18). Tarea movida de `kanban/todo/` a `kanban/done/`.
