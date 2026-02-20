@@ -5,5 +5,12 @@
     "git": {
       "defaultBranch": "developer"
     }
+  },
+  {
+    "name": "kanban-simple",
+    "path": "/home/phantom/Documents/proyectos/kanban-simple",
+    "git": {
+      "defaultBranch": "main"
+    }
   }
 ]
