@@ -1,25 +1,9 @@
 [
   {
-    "name": "kanban-simple",
-    "path": "/home/phantom/Documents/proyectos/kanban-simple",
+    "name": "TennatApp",
+    "path": "/home/phantom/Documents/proyectos/tennat-app-com",
     "git": {
-      "defaultBranch": "main",
-      "autoPush": false,
-      "autoMerge": true
-    }
-  },
-  {
-    "name": "alpha",
-    "path": "/tmp/proyecto-alpha",
-    "git": {
-      "defaultBranch": "main"
-    }
-  },
-  {
-    "name": "beta",
-    "path": "/tmp/proyecto-beta",
-    "git": {
-      "defaultBranch": "main"
+      "defaultBranch": "developer"
     }
   }
 ]

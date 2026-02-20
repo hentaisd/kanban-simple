@@ -566,12 +566,13 @@ app.post('/api/engine', (req, res) => {
 });
 
 // ─────────────────────────────────────────────
-// CONTROL DEL MOTOR IA — abre gnome-terminal
+// CONTROL DEL MOTOR IA — usa loop.js con flujo git completo
 // ─────────────────────────────────────────────
 const { spawn, execSync } = require('child_process');
-const CLI_PATH  = path.join(__dirname, '../../src/cli/index.js');
+const CLI_PATH  = path.join(__dirname, '../cli/index.js');
 const PID_FILE  = '/tmp/kanban-loop.pid';
 const TASK_STATUS_FILE = '/tmp/kanban-task-status.json';
+const LOOP_LOG_FILE = '/tmp/kanban-motor.log';
 
 /** Lee el PID del loop desde el archivo, o null si no existe / muerto */
 function readLoopPid() {
@@ -589,133 +590,100 @@ function getLoopStatus() {
   return readLoopPid() !== null ? 'running' : 'stopped';
 }
 
-// Polling para detectar cuando termina una tarea
+/**
+ * Resuelve el path del proyecto activo.
+ */
+function getActiveProjectPath() {
+  try {
+    const active = readActiveProject();
+    if (active?.name) {
+      const list = readProjectsFile();
+      const project = list.find(p => p.name === active.name);
+      if (project?.path) return project.path;
+    }
+  } catch {}
+  return path.resolve(__dirname, '../../');
+}
+
+// Polling para detectar cuando termina una tarea (lee kanban)
 let taskPollInterval = null;
 function startTaskPolling(taskId, engine) {
   if (taskPollInterval) clearInterval(taskPollInterval);
-  
+
   taskPollInterval = setInterval(() => {
     try {
-      if (fs.existsSync(TASK_STATUS_FILE)) {
-        const status = JSON.parse(fs.readFileSync(TASK_STATUS_FILE, 'utf8'));
-        if (status.taskId === taskId && status.status === 'done') {
-          clearInterval(taskPollInterval);
-          taskPollInterval = null;
-          
-          // Mover tarea a done
-          const kanbanPath = getActiveKanbanPath();
-          moveTask(taskId, 'done', kanbanPath);
-          broadcastChange('task:completed', { taskId, title: status.title });
-          
-          // Notificación del sistema
-          spawn('notify-send', ['AI-Kanban', `Tarea #${taskId} completada: ${status.title}`]);
-          
-          // Limpiar archivo de estado
-          fs.unlinkSync(TASK_STATUS_FILE);
-          
-          // Buscar siguiente tarea
-          setTimeout(() => processNextTask(engine), 2000);
+      const kanbanPath = getActiveKanbanPath();
+      // Verificar si la tarea ya no está en in_progress (loop.js la mueve)
+      const inProgress = getTasks('in_progress', kanbanPath);
+      const stillRunning = inProgress.some(t => String(t.id) === String(taskId));
+
+      if (!stillRunning) {
+        clearInterval(taskPollInterval);
+        taskPollInterval = null;
+
+        // Verificar a dónde fue (done o review)
+        const doneTasks = getTasks('done', kanbanPath);
+        const reviewTasks = getTasks('review', kanbanPath);
+        const inDone = doneTasks.some(t => String(t.id) === String(taskId));
+        const inReview = reviewTasks.some(t => String(t.id) === String(taskId));
+
+        if (inDone) {
+          broadcastChange('task:completed', { taskId, status: 'done' });
+          spawn('notify-send', ['AI-Kanban', `Tarea #${taskId} completada`], { stdio: 'ignore' });
+        } else if (inReview) {
+          broadcastChange('task:completed', { taskId, status: 'review' });
+          spawn('notify-send', ['AI-Kanban', `Tarea #${taskId} enviada a review`], { stdio: 'ignore' });
+        }
+
+        // Verificar si el loop sigue corriendo (procesará la siguiente tarea)
+        const pid = readLoopPid();
+        if (pid) {
+          // El loop sigue — buscar si tomó otra tarea
+          setTimeout(() => {
+            const nextInProgress = getTasks('in_progress', kanbanPath);
+            if (nextInProgress.length > 0) {
+              const next = nextInProgress[0];
+              broadcastChange('loop:started', { taskId: next.id, title: next.title });
+              startTaskPolling(next.id, engine);
+            } else {
+              // Puede que esté esperando, seguir polling
+              startLoopPolling(engine);
+            }
+          }, 5000);
+        } else {
+          broadcastChange('loop:stopped', {});
         }
       }
     } catch {}
-  }, 2000);
+  }, 3000);
 }
 
-// Crear script para ejecutar tarea
-function createTaskScript(task, engine) {
-  const taskId = task.id;
-  const taskTitle = (task.title || '').replace(/'/g, "'\\''");
-  const taskContent = (task.content || '').replace(/'/g, "'\\''");
-  const prompt = `TAREA #${taskId}: ${taskTitle}. ${taskContent}`;
-  
-  const script = `#!/bin/bash
-cd /home/phantom/Documents/proyectos/tennat-app-com
+// Polling para detectar cuando el loop toma una nueva tarea
+function startLoopPolling(engine) {
+  if (taskPollInterval) clearInterval(taskPollInterval);
 
-echo ""
-echo "════════════════════════════════════════════════════════════════"
-echo "  AI-KANBAN - TAREA #${taskId}"
-echo "  ${taskTitle}"
-echo "════════════════════════════════════════════════════════════════"
-echo ""
-echo "  Motor: ${engine.toUpperCase()}"
-echo "  Estado: Trabajando..."
-echo ""
+  let checks = 0;
+  taskPollInterval = setInterval(() => {
+    checks++;
+    try {
+      const kanbanPath = getActiveKanbanPath();
+      const inProgress = getTasks('in_progress', kanbanPath);
 
-# Ejecutar IA
-${engine === 'opencode' 
-  ? `opencode run '${prompt}' --dir /home/phantom/Documents/proyectos/tennat-app-com`
-  : `claude -p '${prompt}' --dangerously-skip-permissions`}
-
-EXIT_CODE=$?
-
-echo ""
-echo "════════════════════════════════════════════════════════════════"
-if [ $EXIT_CODE -eq 0 ]; then
-  echo "  ✓ Tarea completada"
-else
-  echo "  ✗ Error: código $EXIT_CODE"
-fi
-echo "════════════════════════════════════════════════════════════════"
-echo ""
-echo "  Cerrando en 2 segundos..."
-sleep 2
-
-# Guardar estado de completado
-echo '{"taskId":${taskId},"status":"done","title":"${taskTitle}"}' > ${TASK_STATUS_FILE}
-exit
-`;
-  
-  const scriptPath = `/tmp/ai-kanban-task-${taskId}.sh`;
-  fs.writeFileSync(scriptPath, script, { mode: 0o755 });
-  return scriptPath;
-}
-
-// Auto-start: procesar tareas automáticamente al iniciar
-let autoProcessInterval = null;
-
-function startAutoProcessing() {
-  if (autoProcessInterval) return;
-  
-  autoProcessInterval = setInterval(async () => {
-    const kanbanPath = getActiveKanbanPath();
-    const todoTasks = getTasks('todo', kanbanPath);
-    const inProgressTasks = getTasks('in_progress', kanbanPath);
-    
-    // Si hay tareas en TODO y ninguna en progreso, empezar una
-    if (todoTasks.length > 0 && inProgressTasks.length === 0) {
-      console.log('[Auto] Iniciando siguiente tarea automáticamente...');
-      const engineData = readEngine();
-      const engine = engineData.engine || 'opencode';
-      await processNextTask(engine);
-    }
-  }, 5000); // Revisar cada 5 segundos
-}
-
-function stopAutoProcessing() {
-  if (autoProcessInterval) {
-    clearInterval(autoProcessInterval);
-    autoProcessInterval = null;
-  }
-}
-
-// Procesar siguiente tarea automáticamente
-async function processNextTask(engine) {
-  const kanbanPath = getActiveKanbanPath();
-  const todoTasks = getTasks('todo', kanbanPath);
-  const task = todoTasks[0];
-  
-  if (!task) {
-    broadcastChange('loop:stopped', {});
-    return;
-  }
-  
-  const title = `AI-Kanban — ${engine.toUpperCase()}`;
-  const scriptPath = createTaskScript(task, engine);
-  
-  spawn('gnome-terminal', ['--title', title, '--', 'bash', '-c', `bash '${scriptPath}'`], { detached: true, stdio: 'ignore' }).unref();
-  moveTask(task.id, 'in_progress', kanbanPath);
-  broadcastChange('loop:started', { taskId: task.id });
-  startTaskPolling(task.id, engine);
+      if (inProgress.length > 0) {
+        clearInterval(taskPollInterval);
+        taskPollInterval = null;
+        const task = inProgress[0];
+        broadcastChange('loop:started', { taskId: task.id, title: task.title });
+        startTaskPolling(task.id, engine);
+      } else if (checks > 20) {
+        // 60s sin actividad — el loop probablemente terminó
+        clearInterval(taskPollInterval);
+        taskPollInterval = null;
+        const pid = readLoopPid();
+        if (!pid) broadcastChange('loop:stopped', {});
+      }
+    } catch {}
+  }, 3000);
 }
 
 /**
@@ -723,109 +691,126 @@ async function processNextTask(engine) {
  */
 app.get('/api/loop/status', (req, res) => {
   const pid = readLoopPid();
-  res.json({ status: pid ? 'running' : 'stopped', pid: pid || null });
+  const kanbanPath = getActiveKanbanPath();
+  const inProgress = getTasks('in_progress', kanbanPath);
+  const currentTask = inProgress.length > 0 ? inProgress[0] : null;
+
+  res.json({
+    status: pid ? 'running' : 'stopped',
+    pid: pid || null,
+    currentTask: currentTask ? { id: currentTask.id, title: currentTask.title } : null,
+    logFile: LOOP_LOG_FILE,
+  });
 });
 
 /**
- * POST /api/loop/start — inicia el procesamiento automático
+ * GET /api/loop/logs — últimas líneas del log del motor
+ */
+app.get('/api/loop/logs', (req, res) => {
+  const lines = parseInt(req.query.lines) || 50;
+  try {
+    if (fs.existsSync(LOOP_LOG_FILE)) {
+      const content = fs.readFileSync(LOOP_LOG_FILE, 'utf8');
+      const allLines = content.split('\n');
+      const lastLines = allLines.slice(-lines).join('\n');
+      res.type('text/plain').send(lastLines);
+    } else {
+      res.type('text/plain').send('Sin logs todavía.');
+    }
+  } catch (err) {
+    res.status(500).type('text/plain').send(`Error leyendo logs: ${err.message}`);
+  }
+});
+
+/**
+ * POST /api/loop/start — inicia el motor usando loop.js (flujo completo con git)
  */
 app.post('/api/loop/start', async (req, res) => {
+  // Verificar si ya está corriendo
+  const existingPid = readLoopPid();
+  if (existingPid) {
+    return res.json({ success: false, error: 'El motor ya está corriendo', pid: existingPid });
+  }
+
   const engineData = readEngine();
   const engine = engineData.engine || 'opencode';
 
-  // Leer la primera tarea en TODO
+  // Verificar que hay tareas
   const kanbanPath = getActiveKanbanPath();
   const todoTasks = getTasks('todo', kanbanPath);
-  const task = todoTasks[0];
-
-  if (!task) {
+  if (todoTasks.length === 0) {
     return res.json({ success: false, error: 'No hay tareas en TODO' });
   }
 
-  // Iniciar procesamiento automático
-  startAutoProcessing();
+  const firstTask = todoTasks[0];
 
-  const scriptPath = createTaskScript(task, engine);
+  // Lanzar el loop como proceso independiente
+  // loop.js se encarga de escribir al log file via WriteStream propio
+  const loopProc = spawn('node', [CLI_PATH, 'start', '--engine', engine], {
+    cwd: path.resolve(__dirname, '../../'),
+    detached: true,
+    stdio: 'ignore',
+    env: { ...process.env, AI_ENGINE: engine },
+  });
+  loopProc.unref();
 
-  // Abrir terminal
-  spawn('gnome-terminal', ['--title', `AI-Kanban — ${engine.toUpperCase()}`, '--', 'bash', '-c', `bash '${scriptPath}'`], { detached: true, stdio: 'ignore' }).unref();
+  console.log(`[Motor] Lanzado con engine: ${engine}, log: ${LOOP_LOG_FILE}`);
 
-  // Mover tarea a in_progress
-  moveTask(task.id, 'in_progress', kanbanPath);
-  broadcastChange('loop:started', { taskId: task.id });
+  // Esperar a que loop.js escriba su PID file y arranque
+  let retries = 0;
+  const waitForPid = setInterval(() => {
+    retries++;
+    const pid = readLoopPid();
+    if (pid) {
+      clearInterval(waitForPid);
+      console.log(`[Motor] PID confirmado: ${pid}`);
+      startLoopPolling(engine);
+    } else if (retries > 10) {
+      clearInterval(waitForPid);
+      console.log('[Motor] Timeout esperando PID — el motor puede haber fallado');
+      startLoopPolling(engine);
+    }
+  }, 1000);
 
-  // Iniciar polling para detectar cuando termine
-  startTaskPolling(task.id, engine);
+  broadcastChange('loop:started', { taskId: firstTask.id, title: firstTask.title });
 
-  res.json({ success: true, engine, taskId: task.id, title: task.title, message: 'Procesamiento automático iniciado' });
+  res.json({
+    success: true,
+    engine,
+    taskId: firstTask.id,
+    title: firstTask.title,
+    todoCount: todoTasks.length,
+    logFile: LOOP_LOG_FILE,
+    message: `Motor iniciado — ${todoTasks.length} tareas en cola`,
+  });
 });
 
 /**
- * POST /api/loop/stop — detiene el procesamiento de tareas
+ * POST /api/loop/stop — detiene el motor
  */
 app.post('/api/loop/stop', (req, res) => {
-  stopAutoProcessing();
+  // Detener polling
   if (taskPollInterval) {
     clearInterval(taskPollInterval);
     taskPollInterval = null;
   }
+
+  // Matar el proceso del loop
+  const pid = readLoopPid();
+  if (pid) {
+    try {
+      process.kill(pid, 'SIGTERM');
+      console.log(`[Motor] Enviado SIGTERM a PID ${pid}`);
+    } catch (err) {
+      console.log(`[Motor] Error matando PID ${pid}: ${err.message}`);
+    }
+  }
+
+  // Limpiar archivos temporales
   try { fs.unlinkSync(TASK_STATUS_FILE); } catch {}
+
   broadcastChange('loop:stopped', {});
-  res.json({ success: true, message: 'Procesamiento automático detenido' });
-});
-
-/**
- * POST /api/loop/start — abre una terminal con la IA y la tarea
- */
-app.post('/api/loop/start', async (req, res) => {
-  const engineData = readEngine();
-  const engine = engineData.engine || 'opencode';
-  const title = `AI-Kanban — ${engine.toUpperCase()}`;
-
-  // Leer la primera tarea en TODO
-  const kanbanPath = getActiveKanbanPath();
-  const todoTasks = getTasks('todo', kanbanPath);
-  const task = todoTasks[0];
-
-  if (!task) {
-    return res.json({ success: false, error: 'No hay tareas en TODO' });
-  }
-
-  // Prompt simple
-  const prompt = `TAREA #${task.id}: ${task.title}. ${task.content || ''}`.replace(/'/g, "'\\''");
-
-  // Comando: ejecuta IA, guarda estado cuando termina, y cierra
-  let cmd;
-  if (engine === 'opencode') {
-    cmd = `cd /home/phantom/Documents/proyectos/tennat-app-com && opencode run '${prompt}' --dir /home/phantom/Documents/proyectos/tennat-app-com; echo '{"taskId":${task.id},"status":"done","title":"${task.title.replace(/"/g, '\\"')}"}' > ${TASK_STATUS_FILE}; exit`;
-  } else {
-    cmd = `cd /home/phantom/Documents/proyectos/tennat-app-com && claude '${prompt}' --dangerously-skip-permissions; echo '{"taskId":${task.id},"status":"done","title":"${task.title.replace(/"/g, '\\"')}"}' > ${TASK_STATUS_FILE}; exit`;
-  }
-
-  // Abrir terminal
-  spawn('gnome-terminal', ['--title', title, '--', 'bash', '-c', cmd], { detached: true, stdio: 'ignore' }).unref();
-
-  // Mover tarea a in_progress
-  moveTask(task.id, 'in_progress', kanbanPath);
-  broadcastChange('loop:started', { taskId: task.id });
-
-  // Iniciar polling para detectar cuando termine
-  startTaskPolling(task.id, engine);
-
-  res.json({ success: true, engine, taskId: task.id, title: task.title });
-});
-
-/**
- * POST /api/loop/stop — detiene el procesamiento de tareas
- */
-app.post('/api/loop/stop', (req, res) => {
-  if (taskPollInterval) {
-    clearInterval(taskPollInterval);
-    taskPollInterval = null;
-  }
-  try { fs.unlinkSync(TASK_STATUS_FILE); } catch {}
-  broadcastChange('loop:stopped', {});
-  res.json({ success: true });
+  res.json({ success: true, message: 'Motor detenido' });
 });
 
 /**

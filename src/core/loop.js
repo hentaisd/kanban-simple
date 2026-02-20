@@ -2,15 +2,16 @@
  * loop.js — Ciclo de procesamiento de tareas
  *
  * Flujo por cada tarea:
- *   1. Lee config (projectPath, engine, git)
+ *   1. Lee config (projectPath, engine, git) — resuelve proyecto activo
  *   2. Verifica dependencias (dependsOn)
  *   3. Mueve tarea: todo → in_progress (actualiza startedAt)
- *   4. Git: checkout main → crear branch de tarea
- *   5. Ciclo IA: PLAN → CODE → REVIEW → TEST (máx 3 iteraciones)
- *   6. Git: add → commit → push → merge (si autoPush)
- *   7. Si falla → rollback git
- *   8. Mueve tarea: in_progress → done | review (actualiza completedAt/iterations)
- *   9. Guarda historial de ejecución
+ *   4. Git: stash → checkout defaultBranch (developer/main) → crear branch de tarea
+ *   5. Ciclo IA: PLAN → CODE → REVIEW → TEST → SCOPE (máx 3 iteraciones)
+ *   6. Git: verificar branch → add → commit → merge a defaultBranch → borrar branch tarea
+ *   7. Si falla → rollback git a defaultBranch
+ *   8. Git: restaurar stash (cambios previos)
+ *   9. Mueve tarea: in_progress → done | review (actualiza completedAt/iterations)
+ *  10. Guarda historial de ejecución
  */
 
 const path = require('path');
@@ -24,10 +25,32 @@ const GitService = require('../git/gitService');
 
 // ── PID file ──────────────────────────────────────────────────
 const PID_FILE = '/tmp/kanban-loop.pid';
+const LOG_FILE = '/tmp/kanban-motor.log';
 fs.writeFileSync(PID_FILE, String(process.pid));
 const cleanPid = () => { try { fs.unlinkSync(PID_FILE); } catch {} };
 process.on('exit', cleanPid);
 process.on('uncaughtException', (err) => { cleanPid(); console.error(err); process.exit(1); });
+
+// ── Log file — escribe directo a disco para que la UI siempre tenga logs ──
+// Si stdout ya está redirigido a archivo (desde server.js), solo necesitamos
+// el WriteStream. Si es TTY (desde CLI directo), duplicamos a ambos.
+const _isTTY = process.stdout.isTTY;
+const _logStream = fs.createWriteStream(LOG_FILE, { flags: 'w' });
+const _origStdoutWrite = process.stdout.write.bind(process.stdout);
+const _origStderrWrite = process.stderr.write.bind(process.stderr);
+
+process.stdout.write = function(chunk, encoding, callback) {
+  _logStream.write(chunk, encoding);
+  if (_isTTY) return _origStdoutWrite(chunk, encoding, callback);
+  if (callback) callback();
+  return true;
+};
+process.stderr.write = function(chunk, encoding, callback) {
+  _logStream.write(chunk, encoding);
+  if (_isTTY) return _origStderrWrite(chunk, encoding, callback);
+  if (callback) callback();
+  return true;
+};
 
 // Al recibir SIGTERM: matar el subprocess de IA y salir limpiamente
 process.on('SIGTERM', () => {
@@ -211,27 +234,30 @@ async function processTask(task, config) {
   const taskProjectPath = resolveProjectPath(config);
   const kanbanPath = getKanbanPath(taskProjectPath);
   const gitCfg = resolveGitConfig(config);
+  const taskStart = Date.now();
 
   console.log(chalk.blue.bold(`\n${'═'.repeat(62)}`));
-  console.log(chalk.blue.bold(`  🚀 TAREA #${task.id}: ${task.title}`));
+  console.log(chalk.blue.bold(`  TAREA #${task.id}: ${task.title}`));
   console.log(chalk.blue.bold(`${'═'.repeat(62)}`));
-  console.log(chalk.gray(`  tipo: ${task.type}  |  prioridad: ${task.priority}`));
-  console.log(chalk.gray(`  branch: ${task.branch}`));
-  console.log(chalk.gray(`  proyecto: ${chalk.white(taskProjectPath)}`));
-  console.log(chalk.gray(`  engine: ${chalk.white(engine)}`));
+  console.log(chalk.gray(`  tipo      : ${task.type}  |  prioridad: ${task.priority}`));
+  console.log(chalk.gray(`  branch    : ${task.branch}`));
+  console.log(chalk.gray(`  proyecto  : ${chalk.white(taskProjectPath)}`));
+  console.log(chalk.gray(`  engine    : ${chalk.white(engine)}`));
+  console.log(chalk.gray(`  git       : ${gitCfg.enabled ? `ON (base: ${gitCfg.defaultBranch}, merge: ${gitCfg.autoMerge}, push: ${gitCfg.autoPush})` : 'OFF'}`));
   if (interactive) {
-    console.log(chalk.magenta(`  modo: INTERACTIVO`));
+    console.log(chalk.magenta(`  modo      : INTERACTIVO`));
   }
   console.log('');
 
   // ── PASO 1: todo → in_progress + actualizar startedAt ───
   moveTask(task.id, 'in_progress', kanbanPath);
   updateTaskFields(task.id, { startedAt: new Date().toISOString() }, kanbanPath);
-  console.log(chalk.cyan('  ▶ Estado: in_progress'));
+  console.log(chalk.cyan('  [1/6] Estado: todo → in_progress'));
 
   const gitService = new GitService(taskProjectPath);
   let taskResult = null;
   let gitEnabled = false;
+  let stashed = false;
 
   try {
     // ── PASO 2: git checkout + crear branch ──
@@ -239,68 +265,131 @@ async function processTask(task, config) {
       const isRepo = await gitService.isGitRepo();
       if (isRepo) {
         gitEnabled = true;
+        const currentBranch = await gitService.getCurrentBranch();
+        console.log(chalk.gray(`  [git] Branch actual antes de empezar: ${currentBranch}`));
+
         try {
-          const stashed = await gitService.stashIfNeeded();
-          if (stashed) console.log(chalk.cyan('  ▶ Git: cambios pendientes guardados con stash'));
-          console.log(chalk.cyan(`  ▶ Git: checkout ${gitCfg.defaultBranch}`));
+          stashed = await gitService.stashIfNeeded();
+          if (stashed) console.log(chalk.cyan(`  [2/6] Git: stash guardado`));
+
+          console.log(chalk.cyan(`  [2/6] Git: checkout ${gitCfg.defaultBranch}`));
           await gitService.checkout(gitCfg.defaultBranch);
+
+          const baseBranch = await gitService.getCurrentBranch();
+          console.log(chalk.gray(`  [git] Confirmado en branch base: ${baseBranch}`));
+
           await gitService.createBranch(task.branch);
-          console.log(chalk.cyan(`  ▶ Git: branch ${task.branch} creado`));
+          const taskBranch = await gitService.getCurrentBranch();
+          console.log(chalk.cyan(`  [2/6] Git: branch '${task.branch}' creado desde '${gitCfg.defaultBranch}'`));
+          console.log(chalk.gray(`  [git] Confirmado en branch de tarea: ${taskBranch}`));
         } catch (e) {
-          console.log(chalk.yellow(`  ⚠ Git branch: ${e.message} (continúa sin branch)`));
+          console.log(chalk.yellow(`  [2/6] Git branch falló: ${e.message}`));
+          console.log(chalk.yellow(`         Continuando sin branch aislado`));
         }
       } else {
-        console.log(chalk.gray('  ⚠ El projectPath no es un repo git'));
+        console.log(chalk.yellow('  [2/6] El projectPath no es un repo git — saltando git'));
       }
+    } else {
+      console.log(chalk.gray('  [2/6] Git desactivado'));
     }
 
     // ── PASO 3: ejecutar con CLI ─────────────
+    console.log(chalk.cyan(`  [3/6] Ejecutando IA (${engine})...`));
     taskResult = await executeTask(task, { projectPath: taskProjectPath, engine, kanbanPath, interactive });
 
-    // ── PASO 4: git add + commit ─────────────
+    // ── PASO 3b: verificar que la IA no cambió de branch ──
+    if (gitEnabled) {
+      const branchCheck = await gitService.ensureBranch(task.branch);
+      if (!branchCheck.ok && branchCheck.restored) {
+        console.log(chalk.yellow(`  [3/6] La IA cambió a '${branchCheck.actual}' — restaurado a '${task.branch}'`));
+      } else if (!branchCheck.ok && !branchCheck.restored) {
+        console.log(chalk.red(`  [3/6] La IA dejó el repo en '${branchCheck.actual}' y no se pudo restaurar`));
+      }
+    }
+
+    // ── PASO 4: git add + commit + merge ─────────────
     if (gitEnabled && taskResult?.success) {
-      const prefix = task.type === 'feature' ? 'feat' : task.type;
+      const prefixes = { feature: 'feat', fix: 'fix', bug: 'fix', architecture: 'chore', chore: 'chore' };
+      const prefix = prefixes[task.type] || task.type;
       const commitMsg = `${prefix}(${task.id}): ${task.title}`;
       try {
         await gitService.addAll();
-        await gitService.commit(commitMsg);
-        console.log(chalk.cyan(`  ▶ Git: commit "${commitMsg}"`));
+        const commitResult = await gitService.commit(commitMsg);
+        if (commitResult) {
+          console.log(chalk.cyan(`  [4/6] Git: commit "${commitMsg}"`));
+        } else {
+          console.log(chalk.gray(`  [4/6] Git: nada nuevo que commitear (la IA ya commiteo)`));
+        }
 
         if (gitCfg.autoPush) {
           await gitService.push(task.branch);
-          console.log(chalk.cyan(`  ▶ Git: push origin ${task.branch}`));
+          console.log(chalk.cyan(`  [4/6] Git: push origin ${task.branch}`));
         }
 
         if (gitCfg.autoMerge) {
           await gitService.checkout(gitCfg.defaultBranch);
           await gitService.merge(task.branch);
-          console.log(chalk.cyan(`  ▶ Git: merge a ${gitCfg.defaultBranch}`));
+          console.log(chalk.cyan(`  [4/6] Git: merge '${task.branch}' → '${gitCfg.defaultBranch}'`));
+
+          // Limpiar branch de tarea después del merge exitoso
+          const deleted = await gitService.deleteBranch(task.branch);
+          if (deleted) {
+            console.log(chalk.gray(`  [git] Branch '${task.branch}' eliminado (ya mergeado)`));
+          }
         }
+
+        // Confirmar estado final
+        const finalBranch = await gitService.getCurrentBranch();
+        console.log(chalk.gray(`  [git] Branch final: ${finalBranch}`));
       } catch (e) {
-        console.log(chalk.yellow(`  ⚠ Git post-tarea: ${e.message}`));
+        console.log(chalk.yellow(`  [4/6] Git post-tarea falló: ${e.message}`));
+        // Intentar volver al branch base para no dejar el repo en mal estado
+        try {
+          await gitService.checkout(gitCfg.defaultBranch);
+          console.log(chalk.gray(`  [git] Restaurado a ${gitCfg.defaultBranch} tras error`));
+        } catch {}
       }
     }
 
     // ── PASO 4b: rollback si falló ───────────
     if (gitEnabled && taskResult && !taskResult.success) {
       try {
-        console.log(chalk.yellow('  ⚠ Tarea fallida — ejecutando rollback git'));
+        console.log(chalk.yellow('  [4/6] Tarea fallida — rollback git'));
         await gitService.rollback(gitCfg.defaultBranch);
+        const rollbackBranch = await gitService.getCurrentBranch();
+        console.log(chalk.gray(`  [git] Rollback completo, ahora en: ${rollbackBranch}`));
       } catch (e) {
-        console.log(chalk.yellow(`  ⚠ Rollback falló: ${e.message}`));
+        console.log(chalk.red(`  [4/6] Rollback falló: ${e.message}`));
       }
     }
 
   } catch (err) {
+    console.log(chalk.red(`  [!] Error inesperado: ${err.message}`));
     taskResult = { success: false, reason: err.message, phasesRecord: null };
     if (gitEnabled) {
       try {
         await gitService.rollback(gitCfg.defaultBranch);
-      } catch {}
+        console.log(chalk.gray(`  [git] Rollback de emergencia a ${gitCfg.defaultBranch}`));
+      } catch (rollbackErr) {
+        console.log(chalk.red(`  [git] Rollback de emergencia falló: ${rollbackErr.message}`));
+      }
+    }
+  }
+
+  // ── PASO 4c: restaurar stash si se guardó al inicio ────
+  if (gitEnabled && stashed) {
+    try {
+      const popped = await gitService.popStashIfNeeded();
+      if (popped) {
+        console.log(chalk.cyan('  [git] Stash restaurado (cambios previos recuperados)'));
+      }
+    } catch (e) {
+      console.log(chalk.yellow(`  [git] No se pudo restaurar stash: ${e.message}`));
     }
   }
 
   const now = new Date().toISOString();
+  const elapsed = Math.round((Date.now() - taskStart) / 1000);
 
   // ── PASO 5: mover a done o review + timestamps ───────────
   if (taskResult?.success && !taskResult.scopeIncomplete) {
@@ -309,9 +398,9 @@ async function processTask(task, config) {
       completedAt: now,
       iterations: taskResult.iterations || 1,
     }, kanbanPath);
-    console.log(chalk.green(`\n  ✅ DONE — ${taskResult.summary}`));
+    console.log(chalk.green(`\n  [5/6] DONE — ${taskResult.summary} (${elapsed}s)`));
     if (taskResult.iterations > 1) {
-      console.log(chalk.gray(`     (completado en ${taskResult.iterations} iteraciones)`));
+      console.log(chalk.gray(`         (completado en ${taskResult.iterations} iteraciones)`));
     }
   } else if (taskResult?.success && taskResult.scopeIncomplete) {
     moveTask(task.id, 'review', kanbanPath);
@@ -319,12 +408,13 @@ async function processTask(task, config) {
       completedAt: now,
       iterations: taskResult.iterations || 1,
     }, kanbanPath);
-    console.log(chalk.yellow(`\n  ⚠ SCOPE INCOMPLETO → REVIEW`));
-    console.log(chalk.yellow(`     ${taskResult.scopeNote}`));
+    console.log(chalk.yellow(`\n  [5/6] SCOPE INCOMPLETO → REVIEW (${elapsed}s)`));
+    console.log(chalk.yellow(`         ${taskResult.scopeNote}`));
   } else {
     moveTask(task.id, 'review', kanbanPath);
     updateTaskFields(task.id, { completedAt: now }, kanbanPath);
-    console.log(chalk.yellow(`\n  ⚠  REVIEW — ${taskResult?.reason ?? 'Error desconocido'}`));
+    console.log(chalk.yellow(`\n  [5/6] FALLIDA → REVIEW (${elapsed}s)`));
+    console.log(chalk.yellow(`         Razón: ${taskResult?.reason ?? 'Error desconocido'}`));
   }
 
   // ── PASO 6: guardar historial ────────────────────────────
@@ -342,11 +432,16 @@ async function processTask(task, config) {
           test: taskResult.phasesRecord.test,
           scope: taskResult.phasesRecord.scope,
         },
-      });
+      }, kanbanPath);
+      console.log(chalk.gray(`  [6/6] Historial guardado`));
     } catch (err) {
-      console.log(chalk.gray(`  ⚠ No se pudo guardar historial: ${err.message}`));
+      console.log(chalk.yellow(`  [6/6] No se pudo guardar historial: ${err.message}`));
     }
   }
+
+  console.log(chalk.blue.bold(`${'═'.repeat(62)}`));
+  console.log(chalk.blue.bold(`  FIN TAREA #${task.id} — ${taskResult?.success ? 'OK' : 'FALLIDA'} — ${elapsed}s total`));
+  console.log(chalk.blue.bold(`${'═'.repeat(62)}\n`));
 
   return taskResult;
 }
@@ -369,14 +464,30 @@ async function startLoop(cliOverrides = {}) {
     process.exit(1);
   }
 
+  // Resolver proyecto activo y git config
+  const resolvedPath = resolveProjectPath(config);
+  const resolvedGit = resolveGitConfig(config);
+  const activeProject = readActiveProject();
+
   console.log(chalk.blue.bold('\n  AI-Kanban — Motor iniciado'));
-  console.log(chalk.gray(`  Proyecto : ${config.projectPath}`));
-  console.log(chalk.gray(`  Engine   : ${engine || 'dry-run'}`));
-  console.log(chalk.gray(`  Git      : ${config.git.enabled ? 'activado' : 'desactivado'}`));
-  console.log(chalk.gray(`  Espera   : ${waitSeconds}s entre ciclos`));
+  console.log(chalk.blue.bold('  ─────────────────────────────────────────'));
+  if (activeProject) {
+    console.log(chalk.white(`  Proyecto : ${activeProject.name} (${resolvedPath})`));
+  } else {
+    console.log(chalk.white(`  Proyecto : ${resolvedPath}`));
+  }
+  console.log(chalk.white(`  Engine   : ${engine || 'dry-run'}`));
+  console.log(chalk.white(`  Git      : ${resolvedGit.enabled ? 'ON' : 'OFF'}`));
+  if (resolvedGit.enabled) {
+    console.log(chalk.white(`    base   : ${resolvedGit.defaultBranch}`));
+    console.log(chalk.white(`    merge  : ${resolvedGit.autoMerge ? 'auto' : 'manual'}`));
+    console.log(chalk.white(`    push   : ${resolvedGit.autoPush ? 'auto' : 'manual'}`));
+  }
+  console.log(chalk.white(`  Espera   : ${waitSeconds}s entre ciclos`));
   if (interactive) {
     console.log(chalk.magenta(`  Modo     : INTERACTIVO`));
   }
+  console.log(chalk.blue.bold('  ─────────────────────────────────────────'));
   console.log('');
 
   let cycle = 0;
@@ -384,20 +495,42 @@ async function startLoop(cliOverrides = {}) {
 
   while (true) {
     cycle++;
-    console.log(chalk.gray(`\n  [ciclo ${cycle}]  ${new Date().toLocaleTimeString()}`));
+    const cycleTime = new Date().toLocaleTimeString();
+    console.log(chalk.gray(`\n  ┌─ ciclo ${cycle} ─ ${cycleTime} ${'─'.repeat(Math.max(0, 40 - cycleTime.length))}`));
 
     const resolvedProjectPath = resolveProjectPath(config);
     const loopKanbanPath = getKanbanPath(resolvedProjectPath);
+
+    // Verificar estado git al inicio de cada ciclo
+    if (resolvedGit.enabled) {
+      try {
+        const gs = new GitService(resolvedProjectPath);
+        const isRepo = await gs.isGitRepo();
+        if (isRepo) {
+          const branch = await gs.getCurrentBranch();
+          if (branch !== resolvedGit.defaultBranch) {
+            console.log(chalk.yellow(`  │ git: en '${branch}' (esperado: '${resolvedGit.defaultBranch}') — corrigiendo`));
+            await gs.checkout(resolvedGit.defaultBranch);
+          } else {
+            console.log(chalk.gray(`  │ git: ${branch}`));
+          }
+        }
+      } catch (gitErr) {
+        console.log(chalk.yellow(`  │ git check falló: ${gitErr.message}`));
+      }
+    }
+
     const todoTasks = getTasks('todo', loopKanbanPath);
 
     if (todoTasks.length === 0) {
-      console.log(chalk.gray('  Sin tareas en TODO.'));
+      console.log(chalk.gray('  │ Sin tareas en TODO.'));
+      console.log(chalk.gray('  └─────────────────────────────────────────'));
       if (cliOverrides.once) break;
       await wait(waitSeconds);
       continue;
     }
 
-    console.log(chalk.gray(`  ${todoTasks.length} tarea(s) en TODO`));
+    console.log(chalk.gray(`  │ ${todoTasks.length} tarea(s) en TODO`));
 
     // Buscar la primera tarea sin dependencias bloqueantes
     let taskToProcess = null;
@@ -407,25 +540,27 @@ async function startLoop(cliOverrides = {}) {
         taskToProcess = candidate;
         break;
       } else {
-        console.log(chalk.yellow(`  ⏭ [${candidate.id}] ${candidate.title} — bloqueada por: ${blocking.join(', ')}`));
+        console.log(chalk.yellow(`  │ skip [${candidate.id}] ${candidate.title} — bloqueada por: ${blocking.join(', ')}`));
       }
     }
 
     if (!taskToProcess) {
-      console.log(chalk.yellow('  Todas las tareas en TODO están bloqueadas por dependencias.'));
+      console.log(chalk.yellow('  │ Todas las tareas en TODO están bloqueadas.'));
+      console.log(chalk.gray('  └─────────────────────────────────────────'));
       if (cliOverrides.once) break;
       await wait(waitSeconds);
       continue;
     }
 
-    console.log(chalk.cyan(`  → [${taskToProcess.id}] ${taskToProcess.title}`));
+    console.log(chalk.cyan(`  │ Procesando: [${taskToProcess.id}] ${taskToProcess.title}`));
+    console.log(chalk.gray('  └─────────────────────────────────────────'));
 
     if (dryRun) {
-      console.log(chalk.yellow('  🔍 DRY RUN: se simula sin ejecutar\n'));
+      console.log(chalk.yellow('  DRY RUN: simulando tarea\n'));
       moveTask(taskToProcess.id, 'in_progress', loopKanbanPath);
       await new Promise(r => setTimeout(r, 1000));
       moveTask(taskToProcess.id, 'done', loopKanbanPath);
-      console.log(chalk.green('  ✅ DONE (simulado)'));
+      console.log(chalk.green('  DONE (simulado)'));
     } else {
       await processTask(taskToProcess, { ...config, engine, interactive });
     }

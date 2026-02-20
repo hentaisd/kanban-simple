@@ -81,8 +81,12 @@ let loopRunning = false;
 async function initLoopStatus() {
   try {
     const res = await fetch('/api/loop/status');
-    const { status } = await res.json();
-    setLoopUI(status === 'running');
+    const data = await res.json();
+    const running = data.status === 'running';
+    setLoopUI(running);
+    if (running && data.currentTask) {
+      addLogLine(`Motor corriendo — tarea activa: #${data.currentTask.id} ${data.currentTask.title}`, 'info');
+    }
   } catch {}
 }
 
@@ -118,6 +122,9 @@ async function toggleLoop() {
   }
 }
 
+let _logPollInterval = null;
+let _lastLogLength = 0;
+
 function setLoopUI(running) {
   loopRunning = running;
   const btn = document.getElementById('loopBtn');
@@ -135,6 +142,44 @@ function setLoopUI(running) {
   // dot en el panel de logs
   const dot = document.getElementById('logStatusDot');
   if (dot) dot.classList.toggle('running', running);
+
+  // Polling de logs del motor
+  if (running && !_logPollInterval) {
+    _lastLogLength = 0;
+    pollMotorLogs();
+    _logPollInterval = setInterval(pollMotorLogs, 3000);
+  } else if (!running && _logPollInterval) {
+    clearInterval(_logPollInterval);
+    _logPollInterval = null;
+    // Una última lectura para capturar los logs finales
+    pollMotorLogs();
+  }
+}
+
+async function pollMotorLogs() {
+  try {
+    const res = await fetch('/api/loop/logs?lines=200');
+    if (!res.ok) return;
+    const text = await res.text();
+    if (text.length === _lastLogLength) return;
+
+    const allLines = text.split('\n');
+    // Calcular cuántas líneas nuevas hay
+    const newStart = _lastLogLength === 0 ? 0 : Math.max(0, allLines.length - 30);
+    const newLines = _lastLogLength === 0 ? allLines : allLines.slice(newStart);
+    _lastLogLength = text.length;
+
+    for (const line of newLines) {
+      const trimmed = line.replace(/\x1b\[[0-9;]*m/g, '').trim();
+      if (!trimmed) continue;
+      let level = '';
+      if (/error|fail|✖|✗/i.test(trimmed)) level = 'error';
+      else if (/⚠|warn|rollback|timeout/i.test(trimmed)) level = 'warn';
+      else if (/✅|✔|DONE|completad|\bok\b/i.test(trimmed)) level = 'ok';
+      else if (/TAREA|FASE|ciclo|Ejecutando|Git:|Motor|branch|merge/i.test(trimmed)) level = 'info';
+      addLogLine(trimmed, level);
+    }
+  } catch {}
 }
 
 // ─────────────────────────────────────────────
@@ -583,6 +628,14 @@ function createCardEl(task) {
     ? `<span class="working-badge">⚡ Trabajando</span>`
     : '';
 
+  // Contar criterios de aceptación completados
+  const content = task.content || '';
+  const criteriaTotal = (content.match(/- \[[x ]\]/g) || []).length;
+  const criteriaDone = (content.match(/- \[x\]/g) || []).length;
+  const criteriaHtml = criteriaTotal > 0 
+    ? `<div class="card-criteria">${criteriaDone}/${criteriaTotal} criterios</div>`
+    : '';
+
   card.innerHTML = `
     <div class="card-header">
       <span class="card-id">#${idStr}</span>
@@ -594,6 +647,7 @@ function createCardEl(task) {
       </div>
     </div>
     <div class="card-title">${escapeHtml(task.title)}</div>
+    ${criteriaHtml}
     ${labels ? `<div class="card-labels">${labels}</div>` : ''}
     <div class="card-footer">
       <span class="card-branch" title="${escapeHtml(task.branch || '')}">${escapeHtml(task.branch || '')}</span>

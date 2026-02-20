@@ -19,8 +19,57 @@ const path = require('path');
 const chalk = require('chalk');
 const readline = require('readline');
 const { readContext, getContextPath } = require('./project-context');
+const { getHistory } = require('./history');
 
 const MAX_ITERATIONS = 3;
+
+// ─── ARTEFACTOS POR FASE — guarda .md en kanban/.history/{id}/ ──────────────
+function getArtifactsDir(kanbanPath, taskId) {
+  const padded = String(taskId).padStart(3, '0');
+  return path.join(kanbanPath, '.history', padded);
+}
+
+function saveArtifact(kanbanPath, taskId, phase, content) {
+  if (!kanbanPath) return null;
+  const dir = getArtifactsDir(kanbanPath, taskId);
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, `${phase}.md`);
+  fs.writeFileSync(file, content, 'utf8');
+  return file;
+}
+
+function readArtifact(kanbanPath, taskId, phase) {
+  if (!kanbanPath) return null;
+  const file = path.join(getArtifactsDir(kanbanPath, taskId), `${phase}.md`);
+  try { return fs.readFileSync(file, 'utf8'); } catch { return null; }
+}
+
+/**
+ * Genera un resumen de intentos anteriores para que la IA no repita errores.
+ */
+function getPreviousAttemptsContext(kanbanPath, taskId) {
+  const history = getHistory(taskId, kanbanPath);
+  if (!history || history.length === 0) return '';
+
+  const recent = history.slice(-3); // últimos 3 intentos
+  const lines = recent.map((h, i) => {
+    const parts = [];
+    parts.push(`Intento ${i + 1} (${h.timestamp}): ${h.result}`);
+    if (h.summary) parts.push(`  Resultado: ${h.summary}`);
+    if (h.phases?.plan?.summary) parts.push(`  Plan: ${h.phases.plan.summary.slice(0, 150)}`);
+    if (h.phases?.code?.length) {
+      h.phases.code.forEach(c => parts.push(`  Code iter${c.iteration}: ${c.status} — ${c.summary?.slice(0, 100)}`));
+    }
+    if (h.phases?.review?.length) {
+      h.phases.review.forEach(r => parts.push(`  Review iter${r.iteration}: ${r.status} — ${r.summary?.slice(0, 100)}`));
+    }
+    if (h.phases?.test?.length) {
+      h.phases.test.forEach(t => parts.push(`  Test iter${t.iteration}: ${t.status} — ${t.summary?.slice(0, 100)}`));
+    }
+    return parts.join('\n');
+  });
+  return lines.join('\n\n');
+}
 
 // Proceso actual corriendo (claude/opencode) — para poder matarlo con SIGTERM
 let currentProc = null;
@@ -50,9 +99,10 @@ function killCurrentPhase() {
 
 // ─── TIMEOUTS ────────────────────────────────────────────────
 // Tiempo máximo total por fase (IA puede tardar en CODE/TEST)
-const PHASE_TIMEOUT_MS      = 10 * 60 * 1000;   // 10 min
+const PHASE_TIMEOUT_MS      = 15 * 60 * 1000;   // 15 min
 // Si no llega ningún byte de output durante este tiempo → colgado
-const INACTIVITY_TIMEOUT_MS =  3 * 60 * 1000;   // 3 min sin actividad
+// Claude puede pasar varios minutos leyendo archivos sin generar output
+const INACTIVITY_TIMEOUT_MS =  5 * 60 * 1000;   // 5 min sin actividad
 
 // ─────────────────────────────────────────────
 // DETECCIÓN DE CLIs
@@ -102,11 +152,18 @@ function getProjectContext(projectPath) {
 // PROMPTS POR FASE
 // ─────────────────────────────────────────────
 
-function promptPlan(task, projectPath, projectContext) {
+function promptPlan(task, projectPath, projectContext, previousAttempts) {
   const ctx = getProjectContext(projectPath);
   const ctxSection = projectContext
     ? `CONTEXTO ACUMULADO DEL PROYECTO (decisiones anteriores, stack, convenciones):
 ${projectContext}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+`
+    : '';
+
+  const historySection = previousAttempts
+    ? `⚠️ INTENTOS ANTERIORES DE ESTA TAREA (NO repitas los mismos errores):
+${previousAttempts}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 `
     : '';
@@ -117,7 +174,7 @@ ${projectContext}
 PROYECTO: ${projectPath}
 ${ctx}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-${ctxSection}
+${ctxSection}${historySection}
 TAREA #${task.id} — ${task.title}
 Tipo: ${task.type} | Prioridad: ${task.priority}
 
@@ -127,9 +184,10 @@ ${task.content}
 INSTRUCCIONES DE ESTA FASE:
 1. Lee los archivos relevantes del proyecto para entender la estructura
 2. Si hay CONTEXTO ACUMULADO, respeta las decisiones y patrones ya tomados
-3. Identifica exactamente qué archivos necesitarás crear o modificar
-4. Define el enfoque técnico paso a paso
-5. Anticipa posibles problemas o dependencias
+3. Si hay INTENTOS ANTERIORES, analiza qué falló y evita repetirlo
+4. Identifica exactamente qué archivos necesitarás crear o modificar
+5. Define el enfoque técnico paso a paso
+6. Anticipa posibles problemas o dependencias
 
 En tu última línea escribe EXACTAMENTE:
 PLAN: <plan detallado con los archivos a tocar y los cambios específicos>
@@ -550,10 +608,15 @@ function runPhase(engine, prompt, projectPath, label) {
     proc.stderr.pipe(process.stderr, { end: false });
 
     // ── Cierre del proceso ──────────────────────────────────
+    // Resolver la promesa cuando tengamos todo el output.
+    // Usamos proc.on('close') + un pequeño delay para asegurar
+    // que capture haya procesado todos los chunks pendientes.
     proc.on('close', (code) => {
       currentProc = null;
       clearTimers();
-      capture.once('finish', () => {
+
+      // Dar tiempo a que capture procese los últimos chunks del pipe
+      setTimeout(() => {
         if (resolved) return;
         resolved = true;
 
@@ -575,13 +638,20 @@ function runPhase(engine, prompt, projectPath, label) {
           return;
         }
 
-        // Buscar marcador en las últimas 20 líneas
-        const lines = fullOutput.trim().split('\n').reverse().slice(0, 20);
-        for (const line of lines) {
-          const trimmed = line.trim();
+        // Buscar marcador en las últimas 30 líneas
+        const allLines = fullOutput.trim().split('\n');
+        const searchLines = allLines.slice(-30);
+        for (let i = searchLines.length - 1; i >= 0; i--) {
+          const trimmed = searchLines[i].trim();
           for (const marker of ['PLAN', 'RESULTADO', 'REVIEW', 'TESTS', 'SCOPE']) {
             if (trimmed.startsWith(`${marker}:`)) {
-              const value = trimmed.slice(marker.length + 1).trim();
+              let value = trimmed.slice(marker.length + 1).trim();
+              // Si el valor está vacío, el contenido puede estar en las líneas siguientes
+              if (!value && i < searchLines.length - 1) {
+                value = searchLines.slice(i + 1).map(l => l.trim()).filter(Boolean).join('\n');
+              }
+              // Si aún vacío, tomar las últimas 2000 chars del output completo
+              if (!value) value = fullOutput.trim().slice(-2000);
               resolve({ output: fullOutput, marker, value, exitCode: code, duration, timedOut: false });
               return;
             }
@@ -589,8 +659,7 @@ function runPhase(engine, prompt, projectPath, label) {
         }
 
         resolve({ output: fullOutput, marker: null, value: null, exitCode: code, duration, timedOut: false });
-      });
-      capture.end();
+      }, 500);
     });
 
     proc.on('error', (err) => {
@@ -659,11 +728,17 @@ Por favor, analiza esta tarea y realiza los cambios necesarios en el proyecto.`;
     };
   }
 
-  // ── MODO AUTOMÁTICO (existente) ─────────────────────────────
+  // ── MODO AUTOMÁTICO ─────────────────────────────────────────
   // Leer contexto acumulado del proyecto (si existe)
   const projectContext = kanbanPath ? readContext(kanbanPath) : null;
   if (projectContext) {
     console.log(chalk.gray(`  📖 Contexto del proyecto cargado (${projectContext.length} chars)`));
+  }
+
+  // Leer historial de intentos anteriores de esta tarea
+  const previousAttempts = getPreviousAttemptsContext(kanbanPath, task.id);
+  if (previousAttempts) {
+    console.log(chalk.yellow(`  📋 Historial: ${getHistory(task.id, kanbanPath).length} intento(s) anteriores cargados`));
   }
 
   const isArchitecture = task.type === 'architecture';
@@ -673,7 +748,11 @@ Por favor, analiza esta tarea y realiza los cambios necesarios en el proyecto.`;
 
   console.log(chalk.blue(`\n  🤖 Engine : ${chalk.bold(engine)}`));
   console.log(chalk.blue(`  📁 Proyecto: ${chalk.bold(projectPath)}`));
-  console.log(chalk.blue(`  🔄 Ciclo   : ${cycleLabel}\n`));
+  console.log(chalk.blue(`  🔄 Ciclo   : ${cycleLabel}`));
+  if (kanbanPath) {
+    console.log(chalk.gray(`  📂 Artefactos: ${getArtifactsDir(kanbanPath, task.id)}/`));
+  }
+  console.log('');
 
   const executionStart = Date.now();
 
@@ -688,7 +767,7 @@ Por favor, analiza esta tarea y realiza los cambios necesarios en el proyecto.`;
   // ── FASE 1: PLAN ──────────────────────────────────────────
   const planResult = await runPhase(
     engine,
-    promptPlan(task, projectPath, projectContext),
+    promptPlan(task, projectPath, projectContext, previousAttempts),
     projectPath,
     'PLAN — Análisis y planificación',
   );
@@ -713,6 +792,10 @@ Por favor, analiza esta tarea y realiza los cambios necesarios en el proyecto.`;
     phasesRecord.plan = { status: 'no-marker', duration: planResult.duration, summary: plan.slice(0, 200) };
     console.log(chalk.yellow(`  ⚠ Plan sin marcador formal, usando output completo`));
   }
+
+  // Guardar artefacto del plan
+  const planFile = saveArtifact(kanbanPath, task.id, 'plan', `# Plan — Tarea #${task.id}: ${task.title}\n\n${plan}\n\n---\n_Generado: ${new Date().toISOString()} | Engine: ${engine} | Duración: ${Math.round(planResult.duration / 1000)}s_\n`);
+  if (planFile) console.log(chalk.gray(`  💾 Plan guardado: ${planFile}`));
 
   // ── CICLO: CODE → REVIEW → TEST  (architecture: solo CODE) ──
   let feedback = null;
@@ -765,6 +848,9 @@ Por favor, analiza esta tarea y realiza los cambios necesarios en el proyecto.`;
     phasesRecord.code.push({ iteration, status: 'ok', duration: codeResult.duration, summary: codeSummary });
     console.log(chalk.cyan(`  ✔ CODE completado: ${codeSummary}`));
 
+    // Guardar artefacto del código
+    saveArtifact(kanbanPath, task.id, `code-iter${iteration}`, `# Code — Tarea #${task.id} (iter ${iteration})\n\n**Resultado:** ${codeSummary}\n\n---\n_${new Date().toISOString()} | ${Math.round(codeResult.duration / 1000)}s_\n`);
+
     // ── Architecture: salta REVIEW y TEST, va directo a SCOPE ─
     if (isArchitecture) break;
 
@@ -805,6 +891,9 @@ Por favor, analiza esta tarea y realiza los cambios necesarios en el proyecto.`;
     phasesRecord.review.push({ iteration, status: 'approved', duration: reviewResult.duration, summary: reviewComment });
     console.log(chalk.cyan(`  ✔ REVIEW aprobado: ${reviewComment}`));
 
+    // Guardar artefacto del review
+    saveArtifact(kanbanPath, task.id, `review-iter${iteration}`, `# Review — Tarea #${task.id} (iter ${iteration})\n\n**Veredicto:** Aprobado\n**Comentario:** ${reviewComment}\n\n---\n_${new Date().toISOString()} | ${Math.round(reviewResult.duration / 1000)}s_\n`);
+
     // ── FASE 4: TEST ────────────────────────────────────────
     const testResult = await runPhase(
       engine,
@@ -841,6 +930,10 @@ Por favor, analiza esta tarea y realiza los cambios necesarios en el proyecto.`;
     const testSummary = testResult.value?.replace(/^ok\s*-?\s*/i, '') || 'Tests pasaron';
     phasesRecord.test.push({ iteration, status: 'ok', duration: testResult.duration, summary: testSummary });
     console.log(chalk.green(`  ✔ TESTS OK: ${testSummary}`));
+
+    // Guardar artefacto de tests
+    saveArtifact(kanbanPath, task.id, `test-iter${iteration}`, `# Tests — Tarea #${task.id} (iter ${iteration})\n\n**Resultado:** OK\n**Detalle:** ${testSummary}\n\n---\n_${new Date().toISOString()} | ${Math.round(testResult.duration / 1000)}s_\n`);
+
     finalCodeSummary = codeSummary;
     break; // salir del while para ir a SCOPE
   }
@@ -894,6 +987,9 @@ Por favor, analiza esta tarea y realiza los cambios necesarios en el proyecto.`;
     const scopeSummary = scopeResult.value?.replace(/^ok\s*-?\s*/i, '') || 'Requisitos verificados';
     phasesRecord.scope = { status: 'ok', duration: scopeResult.duration, summary: scopeSummary };
     console.log(chalk.green(`  ✔ SCOPE ok: ${scopeSummary}`));
+
+    // Guardar artefacto de scope
+    saveArtifact(kanbanPath, task.id, 'scope', `# Scope — Tarea #${task.id}: ${task.title}\n\n**Veredicto:** OK\n**Detalle:** ${scopeSummary}\n\n---\n_${new Date().toISOString()} | ${Math.round(scopeResult.duration / 1000)}s_\n`);
   } else if (finalCodeSummary) {
     // Sin kanbanPath no podemos leer/escribir contexto — continúa sin SCOPE
     console.log(chalk.gray('  ⚠ Sin kanbanPath — fase SCOPE omitida'));

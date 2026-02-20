@@ -70,7 +70,8 @@ function writeTask(task, filePath) {
  */
 function generateBranchName(type, title) {
   const slug = slugify(title, { maxLength: 50 });
-  const prefix = type === 'feature' ? 'feature' : type === 'fix' ? 'fix' : 'bug';
+  const prefixes = { feature: 'feature', fix: 'fix', bug: 'bug', architecture: 'chore', chore: 'chore' };
+  const prefix = prefixes[type] || 'task';
   return `${prefix}/${slug}`;
 }
 

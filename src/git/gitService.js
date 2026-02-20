@@ -14,6 +14,7 @@ class GitService {
     this.repoPath = repoPath;
     this.git = simpleGit(repoPath);
     this.defaultBranch = 'main';
+    this._stashed = false;
   }
 
   /**
@@ -46,10 +47,33 @@ class GitService {
                   status.deleted.length + status.staged.length +
                   status.not_added.length;
     if (dirty > 0) {
-      console.log(chalk.gray('  git stash push (cambios pendientes antes del checkout)'));
+      console.log(chalk.gray(`  git stash push (${dirty} cambios pendientes antes del checkout)`));
       await this.git.stash(['push', '-m', 'kanban-pre-checkout']);
+      this._stashed = true;
       return true;
     }
+    this._stashed = false;
+    return false;
+  }
+
+  /**
+   * Restaura el stash si se hizo uno previamente con stashIfNeeded.
+   * @returns {boolean} true si se restauró
+   */
+  async popStashIfNeeded() {
+    if (!this._stashed) return false;
+    try {
+      const list = await this.git.stash(['list']);
+      if (list && list.includes('kanban-pre-checkout')) {
+        console.log(chalk.gray('  git stash pop (restaurando cambios previos)'));
+        await this.git.stash(['pop']);
+        this._stashed = false;
+        return true;
+      }
+    } catch (err) {
+      console.log(chalk.yellow(`  ⚠ stash pop falló: ${err.message}`));
+    }
+    this._stashed = false;
     return false;
   }
 
@@ -111,6 +135,63 @@ class GitService {
   }
 
   /**
+   * Elimina un branch local después del merge.
+   * No falla si el branch no existe.
+   */
+  async deleteBranch(branchName) {
+    try {
+      console.log(chalk.gray(`  git branch -d ${branchName}`));
+      await this.git.branch(['-d', branchName]);
+      return true;
+    } catch (err) {
+      if (err.message.includes('not found') || err.message.includes('not fully merged')) {
+        console.log(chalk.yellow(`  ⚠ No se pudo borrar branch ${branchName}: ${err.message}`));
+      }
+      return false;
+    }
+  }
+
+  /**
+   * Verifica que estamos en el branch esperado.
+   * Si la IA cambió de branch, fuerza el checkout de vuelta.
+   * @returns {{ ok: boolean, actual: string, restored: boolean }}
+   */
+  async ensureBranch(expectedBranch) {
+    const actual = await this.getCurrentBranch();
+    if (actual === expectedBranch) {
+      return { ok: true, actual, restored: false };
+    }
+    console.log(chalk.yellow(`  ⚠ Branch inesperado: estamos en '${actual}' pero debería ser '${expectedBranch}'`));
+    try {
+      // Guardar cambios uncommitted antes de cambiar
+      const status = await this.git.status();
+      const dirty = status.modified.length + status.created.length +
+                    status.deleted.length + status.not_added.length;
+      if (dirty > 0) {
+        console.log(chalk.yellow(`  ⚠ Hay ${dirty} cambios sin commit — haciendo commit de rescate`));
+        await this.git.add('.');
+        await this.git.commit(`wip: cambios de IA en branch ${actual}`);
+        console.log(chalk.gray(`  git commit (rescate de cambios en '${actual}')`));
+      }
+      await this.git.checkout(expectedBranch);
+      // Traer los cambios que la IA hizo en el branch incorrecto
+      if (dirty > 0 && actual !== expectedBranch) {
+        try {
+          console.log(chalk.gray(`  git merge ${actual} (recuperando trabajo de la IA)`));
+          await this.git.merge([actual]);
+        } catch (mergeErr) {
+          console.log(chalk.yellow(`  ⚠ No se pudo merge '${actual}' → '${expectedBranch}': ${mergeErr.message}`));
+        }
+      }
+      console.log(chalk.cyan(`  ▶ Branch restaurado a '${expectedBranch}'`));
+      return { ok: false, actual, restored: true };
+    } catch (err) {
+      console.log(chalk.red(`  ✖ No se pudo restaurar branch a '${expectedBranch}': ${err.message}`));
+      return { ok: false, actual, restored: false };
+    }
+  }
+
+  /**
    * Stage todos los cambios
    */
   async addAll() {
@@ -153,63 +234,6 @@ class GitService {
   async merge(branchName) {
     console.log(chalk.gray(`  git merge ${branchName}`));
     await this.git.merge([branchName]);
-  }
-
-  /**
-   * Ejecuta el flujo completo de git para una tarea
-   * 1. checkout develop/main
-   * 2. pull
-   * 3. crear branch
-   * 4. (ejecutar cambios - externo)
-   * 5. add + commit + push
-   * 6. checkout develop
-   * 7. merge
-   */
-  async executeTaskFlow(task, executeChanges) {
-    const { type, title, branch, id } = task;
-
-    console.log(chalk.blue('\n  📦 Git Workflow:'));
-
-    // 1. Checkout branch principal
-    try {
-      await this.checkout(this.defaultBranch);
-      await this.pull();
-    } catch (err) {
-      console.log(chalk.yellow(`  ⚠ No se pudo hacer checkout a ${this.defaultBranch}: ${err.message}`));
-    }
-
-    // 2. Crear branch de tarea
-    await this.createBranch(branch);
-
-    // 3. Ejecutar cambios (función externa)
-    if (executeChanges) {
-      console.log(chalk.blue('\n  ⚙ Ejecutando cambios...'));
-      await executeChanges();
-    }
-
-    // 4. Commit
-    const prefix = type === 'feature' ? 'feat' : type === 'fix' ? 'fix' : 'bug';
-    const commitMsg = `${prefix}(${id}): ${title}`;
-
-    await this.addAll();
-    await this.commit(commitMsg);
-
-    // 5. Push
-    await this.push(branch);
-
-    // 6. Volver a main y merge
-    try {
-      await this.checkout(this.defaultBranch);
-      await this.merge(branch);
-
-      const mergeCommitMsg = `merge(${id}): ${title} completada`;
-      await this.addAll();
-      await this.commit(mergeCommitMsg);
-    } catch (err) {
-      console.log(chalk.yellow(`  ⚠ Merge falló: ${err.message}`));
-    }
-
-    console.log(chalk.green(`\n  ✅ Git workflow completado para tarea ${id}`));
   }
 
   /**
