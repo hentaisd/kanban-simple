@@ -203,6 +203,36 @@ app.get('/api/tasks/:id', async (req, res) => {
   }
 });
 
+function isEmptyPlaceholder(content) {
+  if (!content) return true;
+  const normalized = content.replace(/\s+/g, ' ').trim();
+  const emptyPatterns = [
+    /^# Descripción\s*# Criterios de aceptación\s*-?\s*$/,
+    /^# Descripción\s+# Criterios de aceptación\s*$/,
+  ];
+  return emptyPatterns.some(p => p.test(normalized));
+}
+
+function generateTaskContent(type, title) {
+  let criteria;
+  if (type === 'feature') {
+    criteria = [
+      `La funcionalidad "${title}" está implementada y funcionando`,
+      'Los tests relevantes pasan correctamente',
+      'El código está documentado',
+    ];
+  } else if (type === 'fix' || type === 'bug') {
+    criteria = [
+      `El problema "${title}" está resuelto`,
+      'El caso que causaba el error ya no ocurre',
+      'No se han introducido regresiones',
+    ];
+  } else {
+    criteria = [`La tarea "${title}" está completada`];
+  }
+  return `# Descripción\n${title}\n\n# Criterios de aceptación\n- ${criteria.join('\n- ')}`;
+}
+
 /**
  * POST /api/tasks - Crear nueva tarea
  */
@@ -218,6 +248,10 @@ app.post('/api/tasks', async (req, res) => {
     const id = nextId(kanbanPath);
     const branch = generateBranchName(type, title);
 
+    const taskContent = isEmptyPlaceholder(content)
+      ? generateTaskContent(type, title)
+      : content;
+
     const task = createTask({
       id,
       title,
@@ -226,7 +260,7 @@ app.post('/api/tasks', async (req, res) => {
       branch,
       labels,
       dependsOn,
-      content: content || `# Descripción\n${title}\n\n# Criterios de aceptación\n- Implementar ${title}`,
+      content: taskContent,
     }, column, kanbanPath);
 
     await invalidateTaskCache(id, [column], kanbanPath);

@@ -867,6 +867,16 @@ function createCardEl(task) {
     ? `<span class="working-badge">⚡ Trabajando</span>`
     : '';
 
+  // Indicador de error en review
+  const errorBadge = task.column === 'review' && task.lastError
+    ? `<span class="error-badge" title="${escapeHtml(task.lastError)}">⚠️ Error</span>`
+    : '';
+  
+  // Mostrar reintento si existe
+  const retryBadge = task.column === 'review' && task.retryCount
+    ? `<span class="retry-badge">🔄 ${task.retryCount}/3</span>`
+    : '';
+
   // Contar criterios de aceptación completados
   const content = task.content || '';
   const criteriaTotal = (content.match(/- \[[x ]\]/g) || []).length;
@@ -881,6 +891,8 @@ function createCardEl(task) {
       <div class="card-badges">
         ${blockedBadge}
         ${workingBadge}
+        ${errorBadge}
+        ${retryBadge}
         <span class="badge badge-${task.type}">${task.type || 'feature'}</span>
         <span class="badge badge-${task.priority}">${task.priority || 'media'}</span>
       </div>
@@ -1054,7 +1066,15 @@ function openDetailModal(e, taskId) {
         ${task.createdAt ? `<span class="detail-date">📅 Creada ${new Date(task.createdAt).toLocaleString()}</span>` : ''}
         ${task.completedAt ? `<span class="detail-date">✅ Completada ${new Date(task.completedAt).toLocaleString()}</span>` : ''}
         ${task.iterations ? `<span class="detail-date">🔄 ${task.iterations} iteraciones</span>` : ''}
+        ${task.retryCount ? `<span class="detail-date">🔁 Reintento ${task.retryCount}/3</span>` : ''}
       </div>
+      ${task.lastError ? `
+      <div class="detail-error-section">
+        <div class="detail-error-header">⚠️ Error en fase: ${escapeHtml(task.lastErrorPhase || 'desconocida')}</div>
+        <div class="detail-error-message">${escapeHtml(task.lastError)}</div>
+        ${task.lastErrorAt ? `<div class="detail-error-time">${new Date(task.lastErrorAt).toLocaleString()}</div>` : ''}
+      </div>
+      ` : ''}
     </div>
     <div class="detail-content-section md-body">
       ${renderMarkdown(task.content)}
@@ -1329,6 +1349,35 @@ function closeModal(id) {
   document.getElementById(id).classList.remove('active');
 }
 
+function generateDefaultContent(type, title) {
+  let criteria;
+  if (type === 'feature') {
+    criteria = [
+      `La funcionalidad "${title}" está implementada y funcionando`,
+      'Los tests relevantes pasan correctamente',
+      'El código está documentado',
+    ];
+  } else if (type === 'fix' || type === 'bug') {
+    criteria = [
+      `El problema "${title}" está resuelto`,
+      'El caso que causaba el error ya no ocurre',
+      'No se han introducido regresiones',
+    ];
+  } else {
+    criteria = [`La tarea "${title}" está completada`];
+  }
+  return `# Descripción\n${title}\n\n# Criterios de aceptación\n- ${criteria.join('\n- ')}`;
+}
+
+function isEmptyPlaceholder(content) {
+  const normalized = content.replace(/\s+/g, ' ').trim();
+  const emptyPatterns = [
+    /^# Descripción\s*# Criterios de aceptación\s*-?\s*$/,
+    /^# Descripción\s+# Criterios de aceptación\s*$/,
+  ];
+  return emptyPatterns.some(p => p.test(normalized));
+}
+
 // ─────────────────────────────────────────────
 // GUARDAR TAREA
 // ─────────────────────────────────────────────
@@ -1340,17 +1389,24 @@ async function saveTask() {
     return;
   }
 
+  const type = document.getElementById('taskType').value;
+  let taskContent = document.getElementById('taskContent').value;
+
+  if (isEmptyPlaceholder(taskContent)) {
+    taskContent = generateDefaultContent(type, title);
+  }
+
   const dependsOn = document.getElementById('taskDependsOn').value
     .split(',').map(s => s.trim()).filter(Boolean);
 
   const data = {
     title,
-    type: document.getElementById('taskType').value,
+    type,
     priority: document.getElementById('taskPriority').value,
     column: document.getElementById('taskColumn').value,
     labels: document.getElementById('taskLabels').value
       .split(',').map(l => l.trim()).filter(Boolean),
-    content: document.getElementById('taskContent').value,
+    content: taskContent,
     dependsOn,
   };
 

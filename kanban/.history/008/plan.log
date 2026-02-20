@@ -1,0 +1,36 @@
+Voy a analizar el proyecto para entender el bug relacionado con crear tareas desde la UI.
+Analizando el código, identifico el problema. Revisemos la función `saveTask` en el frontend:
+## Análisis completado
+
+He identificado el bug. La tarea #008 tiene descripción y criterios vacíos porque:
+
+**Problema raíz:** 
+1. `openCreateModal()` en `app.js:985` inicializa el contenido con un placeholder vacío: `'# Descripción\n\n\n# Criterios de aceptación\n- '`
+2. Si el usuario no modifica este contenido, se guarda tal cual.
+3. El servidor (server.js:229) solo genera contenido por defecto cuando NO hay `content`, pero como el placeholder existe, lo usa sin validarlo.
+4. El CLI (`create.js`) sí genera criterios automáticamente con `generateBasicCriteria()`, pero la UI no.
+
+**Archivos involucrados:**
+- `src/ui/public/app.js:975-990` - `openCreateModal()` 
+- `src/ui/public/app.js:1335-1396` - `saveTask()`
+- `src/ui/server.js:209-245` - POST `/api/tasks`
+
+**Enfoque:**
+1. Detectar contenido placeholder vacío en `saveTask()` antes de enviar
+2. Si el contenido es el template vacío, generar criterios automáticamente similar al CLI
+3. Validación en frontend y mejora del default en servidor como backup
+
+---
+
+PLAN: Modificar 2 archivos:
+
+1. **`src/ui/public/app.js`** - En `saveTask()` (~línea 1353):
+   - Detectar si `taskContent` es el placeholder vacío (`# Descripción\n\n\n# Criterios de aceptación\n- ` o similar)
+   - Si es vacío, generar criterios automáticamente usando la misma lógica que el CLI (`generateBasicCriteria`)
+   - Añadir función `generateDefaultContent(type, title)` que retorne `# Descripción\n${title}\n\n# Criterios de aceptación\n- criterio1\n- criterio2\n- criterio3`
+
+2. **`src/ui/server.js`** - En POST `/api/tasks` (~línea 229):
+   - Mejorar la validación: detectar no solo si `content` es falsy, sino también si es solo el template vacío
+   - Si `content` matchea el patrón `# Descripción\s*\n*\s*# Criterios de aceptación\s*\n*\s*-`, generar contenido con criterios reales
+
+Esto asegura que las tareas creadas desde UI siempre tengan descripción y criterios útiles, igual que las creadas desde CLI.

@@ -499,7 +499,10 @@ async function processTask(task, config) {
     updateTaskFields(task.id, {
       completedAt: now,
       iterations: taskResult.iterations || 1,
-      retryCount: 0,  // Resetear contador de reintentos
+      retryCount: 0,
+      lastError: null,
+      lastErrorAt: null,
+      lastErrorPhase: null,
     }, kanbanPath);
     console.log(chalk.green(`\n  [5/6] DONE — ${taskResult.summary} (${elapsed}s)`));
     if (taskResult.iterations > 1) {
