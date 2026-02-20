@@ -769,6 +769,45 @@ function createColumnEl(col) {
 }
 
 // ─────────────────────────────────────────────
+// INICIAR TAREA INDIVIDUAL
+// ─────────────────────────────────────────────
+async function startTask(taskId, fromColumn) {
+  if (fromColumn !== 'todo') {
+    // Primero mover a todo
+    try {
+      const res = await fetch(`/api/tasks/${taskId}/move`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ column: 'todo' })
+      });
+      const { success } = await res.json();
+      if (!success) throw new Error('Error moviendo tarea');
+    } catch (err) {
+      showToast('Error moviendo tarea a TODO', 'error');
+      return;
+    }
+  }
+  
+  // Iniciar el motor con --once
+  try {
+    const res = await fetch('/api/loop/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ once: true })
+    });
+    const { success, message } = await res.json();
+    if (success) {
+      showToast(`▶ Procesando tarea #${taskId}...`, 'info');
+      loadTasks();
+    } else {
+      showToast(message || 'Error iniciando motor', 'error');
+    }
+  } catch (err) {
+    showToast('Error iniciando motor IA', 'error');
+  }
+}
+
+// ─────────────────────────────────────────────
 // CARGA DE TAREAS
 // ─────────────────────────────────────────────
 async function loadTasks(showLoader = true) {

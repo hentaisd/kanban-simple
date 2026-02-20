@@ -314,6 +314,12 @@ body {
   margin-top: 8px;
 }
 
+.card-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .card-branch {
   font-size: 0.6rem;
   color: var(--text-muted);
@@ -338,6 +344,25 @@ body {
 
 .card:hover .card-menu-btn { opacity: 1; }
 .card-menu-btn:hover { background: var(--bg-2); color: var(--text); }
+
+.card-start-btn {
+  background: linear-gradient(135deg, #166534, #15803d);
+  color: #4ade80;
+  border: none;
+  padding: 3px 10px;
+  border-radius: 4px;
+  font-size: 0.65rem;
+  font-weight: 600;
+  cursor: pointer;
+  opacity: 0;
+  transition: all 0.15s;
+}
+
+.card:hover .card-start-btn { opacity: 1; }
+.card-start-btn:hover { 
+  background: linear-gradient(135deg, #15803d, #166534);
+  transform: scale(1.05);
+}
 
 /* ─── BOTONES ─── */
 .btn {

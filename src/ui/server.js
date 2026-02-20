@@ -882,6 +882,7 @@ app.post('/api/loop/start', async (req, res) => {
 
   const engineData = readEngine();
   const engine = engineData.engine || 'opencode';
+  const { once } = req.body || {};
 
   // Verificar que hay tareas
   const kanbanPath = getActiveKanbanPath();
@@ -893,8 +894,10 @@ app.post('/api/loop/start', async (req, res) => {
   const firstTask = todoTasks[0];
 
   // Lanzar el loop como proceso independiente
-  // loop.js se encarga de escribir al log file via WriteStream propio
-  const loopProc = spawn('node', [CLI_PATH, 'start', '--engine', engine], {
+  const args = [CLI_PATH, 'start', '--engine', engine];
+  if (once) args.push('--once');
+  
+  const loopProc = spawn('node', args, {
     cwd: path.resolve(__dirname, '../../'),
     detached: true,
     stdio: 'ignore',
@@ -902,7 +905,7 @@ app.post('/api/loop/start', async (req, res) => {
   });
   loopProc.unref();
 
-  console.log(`[Motor] Lanzado con engine: ${engine}, log: ${LOOP_LOG_FILE}`);
+  console.log(`[Motor] Lanzado con engine: ${engine}, once: ${!!once}, log: ${LOOP_LOG_FILE}`);
 
   // Esperar a que loop.js escriba su PID file y arranque
   let retries = 0;
@@ -912,11 +915,11 @@ app.post('/api/loop/start', async (req, res) => {
     if (pid) {
       clearInterval(waitForPid);
       console.log(`[Motor] PID confirmado: ${pid}`);
-      startLoopPolling(engine);
+      if (!once) startLoopPolling(engine);
     } else if (retries > 10) {
       clearInterval(waitForPid);
       console.log('[Motor] Timeout esperando PID — el motor puede haber fallado');
-      startLoopPolling(engine);
+      if (!once) startLoopPolling(engine);
     }
   }, 1000);
 
@@ -929,7 +932,9 @@ app.post('/api/loop/start', async (req, res) => {
     title: firstTask.title,
     todoCount: todoTasks.length,
     logFile: LOOP_LOG_FILE,
-    message: `Motor iniciado — ${todoTasks.length} tareas en cola`,
+    message: once 
+      ? `Procesando tarea #${firstTask.id}`
+      : `Motor iniciado — ${todoTasks.length} tareas en cola`,
   });
 });
 
