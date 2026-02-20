@@ -7,6 +7,7 @@
  *   --engine opencode → fuerza uso de opencode CLI
  *   --once            → procesa solo la primera tarea y termina
  *   --dry-run         → simula sin ejecutar
+ *   --interactive     → modo interactivo (puedes escribir comandos)
  */
 
 const chalk = require('chalk');
@@ -34,6 +35,9 @@ async function startCommand(options) {
   if (options.engine) {
     console.log(chalk.cyan(`  Engine   : ${options.engine}`));
   }
+  if (options.interactive) {
+    console.log(chalk.magenta(`  Modo     : INTERACTIVO (puedes escribir comandos)`));
+  }
   if (options.dryRun) {
     console.log(chalk.yellow('\n  🔍 DRY RUN — solo simulación, sin cambios reales'));
   }
@@ -45,6 +49,7 @@ async function startCommand(options) {
     engine:  options.engine   || undefined,
     once:    options.once     || false,
     dryRun:  options.dryRun   || false,
+    interactive: options.interactive || false,
   });
 }
 

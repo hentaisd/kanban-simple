@@ -29,11 +29,49 @@ document.addEventListener('DOMContentLoaded', () => {
   buildBoard();
   loadTasks();
   loadProjects();
+  loadEngine();
   setupSSE();
   setupKeyboardShortcuts();
   initNotifications();
   initLoopStatus();
 });
+
+// ─────────────────────────────────────────────
+// SELECCIÓN DE MOTOR IA (Claude / OpenCode)
+// ─────────────────────────────────────────────
+let currentEngine = 'opencode';
+
+async function loadEngine() {
+  try {
+    const res = await fetch('/api/engine');
+    const { success, engine } = await res.json();
+    if (success && engine) setEngineUI(engine);
+  } catch {}
+}
+
+async function setEngine(engine) {
+  try {
+    const res = await fetch('/api/engine', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ engine }),
+    });
+    const { success, error } = await res.json();
+    if (!success) throw new Error(error);
+    setEngineUI(engine);
+    const labels = { claude: 'Claude AI', opencode: 'OpenCode' };
+    showToast(`Motor: ${labels[engine] || engine}`, 'success');
+  } catch (err) {
+    showToast(`Error: ${err.message}`, 'error');
+  }
+}
+
+function setEngineUI(engine) {
+  currentEngine = engine;
+  document.querySelectorAll('.engine-btn').forEach(btn => btn.classList.remove('active'));
+  const btn = document.getElementById(`eng-${engine}`);
+  if (btn) btn.classList.add('active');
+}
 
 // ─────────────────────────────────────────────
 // CONTROL DEL MOTOR IA
@@ -49,25 +87,54 @@ async function initLoopStatus() {
 }
 
 async function toggleLoop() {
-  const endpoint = loopRunning ? '/api/loop/stop' : '/api/loop/start';
-  const res = await fetch(endpoint, { method: 'POST' });
-  const data = await res.json();
-  if (!data.success && data.error) showToast(data.error, 'error');
+  const wasStopping = loopRunning;
+  const endpoint = wasStopping ? '/api/loop/stop' : '/api/loop/start';
+  
+  // Leer modo seleccionado
+  const loopMode = document.getElementById('loopMode')?.value || 'auto';
+  const interactive = loopMode === 'interactive';
+  
+  try {
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ interactive }),
+    });
+    const data = await res.json();
+    if (data.success) {
+      // Actualización optimista inmediata — SSE confirmará el estado real
+      setLoopUI(!wasStopping);
+      if (!wasStopping && data.engine) {
+        showToast(`Motor ${data.engine} iniciado (${interactive ? 'interactivo' : 'automático'})`, 'success');
+      }
+    } else if (data.error) {
+      showToast(data.error, 'error');
+      // Resincronizar estado real por si acaso
+      initLoopStatus();
+    }
+  } catch {
+    showToast('Error al comunicar con el servidor', 'error');
+    initLoopStatus();
+  }
 }
 
 function setLoopUI(running) {
   loopRunning = running;
   const btn = document.getElementById('loopBtn');
-  if (!btn) return;
-  if (running) {
-    btn.textContent = '⏹ Motor';
-    btn.classList.add('loop-running');
-    btn.title = 'Detener motor IA';
-  } else {
-    btn.textContent = '▶ Motor';
-    btn.classList.remove('loop-running');
-    btn.title = 'Iniciar motor IA';
+  if (btn) {
+    if (running) {
+      btn.textContent = '⏹ Detener IA';
+      btn.classList.add('loop-running');
+      btn.title = 'Detener motor IA';
+    } else {
+      btn.textContent = '▶ Iniciar IA';
+      btn.classList.remove('loop-running');
+      btn.title = 'Iniciar motor IA';
+    }
   }
+  // dot en el panel de logs
+  const dot = document.getElementById('logStatusDot');
+  if (dot) dot.classList.toggle('running', running);
 }
 
 // ─────────────────────────────────────────────
@@ -193,7 +260,14 @@ async function loadProjects() {
     }
 
     if (active) sel.value = active;
+    updateProjectsView();
   } catch {}
+}
+
+function updateProjectsView() {
+  const hasProjects = registeredProjects.length > 0;
+  document.getElementById('board').style.display = hasProjects ? '' : 'none';
+  document.getElementById('noProjectsState').style.display = hasProjects ? 'none' : 'flex';
 }
 
 async function setActiveProject(name) {
@@ -302,9 +376,10 @@ function setupSSE() {
       }
 
       // Eventos del loop
-      if (data.type === 'loop:started') { setLoopUI(true); return; }
-      if (data.type === 'loop:stopped') { setLoopUI(false); loadTasks(false); return; }
-      if (data.type === 'loop:log') return; // solo para consola interna
+      if (data.type === 'loop:started') { setLoopUI(true); addLogLine('▶ Motor IA iniciado', 'info'); return; }
+      if (data.type === 'loop:stopped') { setLoopUI(false); addLogLine('⏹ Motor IA detenido', ''); loadTasks(false); return; }
+      if (data.type === 'loop:log') { addLogLine(data.line || '', data.level || ''); return; }
+      if (data.type === 'engine:changed') { setEngineUI(data.engine); return; }
 
       loadTasks(false);
 
@@ -333,6 +408,8 @@ function setupSSE() {
   es.onopen = () => {
     document.getElementById('statusDot').style.background = '#10b981';
     document.getElementById('statusText').textContent = 'En vivo';
+    // Resincronizar estado del motor por si se perdió algún evento mientras estaba desconectado
+    initLoopStatus();
   };
 }
 
@@ -501,11 +578,17 @@ function createCardEl(task) {
     ? `<span class="blocked-badge">🔒 Bloqueada</span>`
     : '';
 
+  // Indicador de que está trabajando
+  const workingBadge = task.column === 'in_progress' 
+    ? `<span class="working-badge">⚡ Trabajando</span>`
+    : '';
+
   card.innerHTML = `
     <div class="card-header">
       <span class="card-id">#${idStr}</span>
       <div class="card-badges">
         ${blockedBadge}
+        ${workingBadge}
         <span class="badge badge-${task.type}">${task.type || 'feature'}</span>
         <span class="badge badge-${task.priority}">${task.priority || 'media'}</span>
       </div>
@@ -522,10 +605,10 @@ function createCardEl(task) {
   card.addEventListener('dragstart', onDragStart);
   card.addEventListener('dragend', onDragEnd);
 
-  // Click para editar
+  // Click para ver detalle
   card.addEventListener('click', (e) => {
     if (e.target.tagName !== 'BUTTON' && !e.target.closest('.label-chip')) {
-      openEditModal(task.id);
+      openDetailModal(e, task.id);
     }
   });
 
@@ -655,32 +738,33 @@ function openDetailModal(e, taskId) {
   switchTab('detail', document.querySelector('.task-tab[data-tab="detail"]'));
 
   const idStr = String(task.id).padStart(3, '0');
-  const labels = (task.labels || []).map(l => `<span class="label-chip">${l}</span>`).join(' ');
+  const labels = (task.labels || []).map(l => `<span class="label-chip">${escapeHtml(l)}</span>`).join('');
   const deps = (task.dependsOn || []).join(', ');
 
   document.getElementById('detailTitle').innerHTML = `
-    <span>#${idStr}</span>
-    <span class="badge badge-${task.type}" style="margin-left:8px">${task.type}</span>
+    <span class="detail-modal-id">#${idStr}</span>
+    <span class="badge badge-${task.type}">${task.type}</span>
+    <span class="badge badge-${task.priority}">${task.priority}</span>
   `;
 
   document.getElementById('detailBody').innerHTML = `
-    <div style="margin-bottom:12px">
-      <div style="font-size:1rem;font-weight:600;margin-bottom:8px">${escapeHtml(task.title)}</div>
-      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">
-        <span class="badge badge-${task.priority}">${task.priority}</span>
-        ${labels}
+    <div class="detail-header-section">
+      <div class="detail-task-title">${escapeHtml(task.title)}</div>
+      ${labels ? `<div class="detail-labels">${labels}</div>` : ''}
+      <div class="detail-meta-row">
+        ${task.branch ? `<span class="detail-meta-item">🌿 <code class="md-inline">${escapeHtml(task.branch)}</code></span>` : ''}
+        <span class="detail-meta-item">📂 ${escapeHtml(task.column || task.status || '')}</span>
+        ${task.projectPath ? `<span class="detail-meta-item">📦 ${escapeHtml(resolveProjectLabel(task.projectPath))}</span>` : ''}
+        ${deps ? `<span class="detail-meta-item">🔗 Deps: ${escapeHtml(deps)}</span>` : ''}
       </div>
-      <div style="font-size:0.75rem;color:var(--text-muted);font-family:monospace;margin-bottom:8px">
-        📁 ${task.branch || '—'} &nbsp;|&nbsp; 📂 ${task.column || task.status}
+      <div class="detail-dates-row">
+        ${task.createdAt ? `<span class="detail-date">📅 Creada ${new Date(task.createdAt).toLocaleString()}</span>` : ''}
+        ${task.completedAt ? `<span class="detail-date">✅ Completada ${new Date(task.completedAt).toLocaleString()}</span>` : ''}
+        ${task.iterations ? `<span class="detail-date">🔄 ${task.iterations} iteraciones</span>` : ''}
       </div>
-      ${task.projectPath ? `<div style="font-size:0.72rem;color:var(--text-muted);margin-bottom:8px">📦 Proyecto: ${escapeHtml(resolveProjectLabel(task.projectPath))}</div>` : ''}
-      ${deps ? `<div style="font-size:0.72rem;color:var(--text-muted);margin-bottom:8px">🔗 Depende de: ${escapeHtml(deps)}</div>` : ''}
-      ${task.createdAt ? `<div style="font-size:0.7rem;color:var(--text-muted);margin-bottom:4px">📅 Creada: ${new Date(task.createdAt).toLocaleString()}</div>` : ''}
-      ${task.completedAt ? `<div style="font-size:0.7rem;color:var(--text-muted);margin-bottom:4px">✅ Completada: ${new Date(task.completedAt).toLocaleString()}</div>` : ''}
-      ${task.iterations ? `<div style="font-size:0.7rem;color:var(--text-muted);margin-bottom:12px">🔄 Iteraciones: ${task.iterations}</div>` : ''}
     </div>
-    <div style="background:var(--bg-3);border-radius:8px;padding:16px;font-family:monospace;font-size:0.8rem;white-space:pre-wrap;max-height:300px;overflow-y:auto;border:1px solid var(--border)">
-      ${escapeHtml(task.content || '(sin descripción)')}
+    <div class="detail-content-section md-body">
+      ${renderMarkdown(task.content)}
     </div>
   `;
 
@@ -940,6 +1024,141 @@ function showToast(message, type = 'info') {
     toast.classList.add('hiding');
     setTimeout(() => toast.remove(), 300);
   }, 3000);
+}
+
+// ─────────────────────────────────────────────
+// LOGS DEL MOTOR IA
+// ─────────────────────────────────────────────
+let logLines = [];
+let logsOpen = false;
+let unreadLogs = 0;
+const MAX_LOG_LINES = 500;
+
+function toggleLogs() {
+  logsOpen = !logsOpen;
+  document.getElementById('logDrawer').classList.toggle('open', logsOpen);
+  if (logsOpen) {
+    unreadLogs = 0;
+    updateLogsBadge();
+    // scroll al final al abrir
+    const c = document.getElementById('logContent');
+    if (c) c.scrollTop = c.scrollHeight;
+  }
+}
+
+function clearLogs() {
+  logLines = [];
+  unreadLogs = 0;
+  updateLogsBadge();
+  document.getElementById('logContent').innerHTML = '<div class="log-empty">Sin logs aún. Inicia el motor IA para ver la actividad.</div>';
+  document.getElementById('logCount').textContent = '— 0 líneas';
+}
+
+function addLogLine(text, level = '') {
+  if (!text) return;
+  logLines.push({ text, level });
+  if (logLines.length > MAX_LOG_LINES) logLines.shift();
+
+  const content = document.getElementById('logContent');
+  if (!content) return;
+
+  // Quitar el placeholder si existe
+  const empty = content.querySelector('.log-empty');
+  if (empty) empty.remove();
+
+  // Clasificar nivel por color
+  let cls = '';
+  if (level === 'error' || /error|fail|❌/i.test(text)) cls = 'log-error';
+  else if (/warn|⚠/i.test(text)) cls = 'log-warn';
+  else if (/✅|done|completad|success/i.test(text)) cls = 'log-ok';
+  else if (/→|start|inici|▶|plan:|code:|review:|test:/i.test(text)) cls = 'log-info';
+
+  const now = new Date();
+  const time = now.toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+  const line = document.createElement('div');
+  line.className = `log-line ${cls}`;
+  line.innerHTML = `<span class="log-time">${time}</span><span class="log-text">${escapeHtml(text)}</span>`;
+  content.appendChild(line);
+
+  // Auto-scroll solo si el usuario está cerca del fondo
+  const nearBottom = content.scrollHeight - content.scrollTop - content.clientHeight < 60;
+  if (nearBottom || logsOpen) content.scrollTop = content.scrollHeight;
+
+  document.getElementById('logCount').textContent = `— ${logLines.length} líneas`;
+
+  if (!logsOpen) {
+    unreadLogs++;
+    updateLogsBadge();
+  }
+}
+
+function updateLogsBadge() {
+  const btn = document.getElementById('logsBtn');
+  if (!btn) return;
+  const existing = btn.querySelector('.logs-btn-badge');
+  if (unreadLogs > 0) {
+    if (existing) existing.textContent = unreadLogs > 99 ? '99+' : unreadLogs;
+    else {
+      const badge = document.createElement('span');
+      badge.className = 'logs-btn-badge';
+      badge.textContent = unreadLogs > 99 ? '99+' : unreadLogs;
+      btn.appendChild(badge);
+    }
+  } else {
+    if (existing) existing.remove();
+  }
+}
+
+// ─────────────────────────────────────────────
+// MARKDOWN RENDERER
+// ─────────────────────────────────────────────
+function renderMarkdown(raw) {
+  if (!raw || !raw.trim()) return '<span class="md-empty">Sin descripción</span>';
+
+  const lines = raw.split('\n');
+  const out = [];
+  let inUl = false, inCode = false, codeLines = [];
+
+  const closeUl = () => { if (inUl) { out.push('</ul>'); inUl = false; } };
+  const inlineMd = (t) => {
+    let s = escapeHtml(t);
+    s = s.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
+    s = s.replace(/\*([^*\n]+)\*/g, '<em>$1</em>');
+    s = s.replace(/`([^`\n]+)`/g, '<code class="md-inline">$1</code>');
+    return s;
+  };
+
+  for (const line of lines) {
+    if (line.startsWith('```')) {
+      if (inCode) {
+        out.push(`<pre class="md-pre"><code class="md-code-block">${escapeHtml(codeLines.join('\n'))}</code></pre>`);
+        codeLines = []; inCode = false;
+      } else { closeUl(); inCode = true; }
+      continue;
+    }
+    if (inCode) { codeLines.push(line); continue; }
+
+    if (line.startsWith('### ')) { closeUl(); out.push(`<h3 class="md-h3">${inlineMd(line.slice(4))}</h3>`); continue; }
+    if (line.startsWith('## '))  { closeUl(); out.push(`<h2 class="md-h2">${inlineMd(line.slice(3))}</h2>`); continue; }
+    if (line.startsWith('# '))   { closeUl(); out.push(`<h1 class="md-h1">${inlineMd(line.slice(2))}</h1>`); continue; }
+
+    const li = line.match(/^[-*] (.*)/);
+    if (li) {
+      const c = li[1];
+      if (!inUl) { out.push('<ul class="md-ul">'); inUl = true; }
+      if (/^\[x\] /i.test(c)) out.push(`<li class="md-li md-check-done">✅ ${inlineMd(c.slice(4))}</li>`);
+      else if (/^\[ \] /.test(c)) out.push(`<li class="md-li md-check">☐ ${inlineMd(c.slice(4))}</li>`);
+      else out.push(`<li class="md-li">${inlineMd(c)}</li>`);
+      continue;
+    }
+
+    closeUl();
+    if (line.trim() === '') { out.push('<div class="md-br"></div>'); continue; }
+    out.push(`<p class="md-p">${inlineMd(line)}</p>`);
+  }
+  closeUl();
+  return out.join('');
 }
 
 // ─────────────────────────────────────────────

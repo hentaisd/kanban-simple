@@ -531,65 +531,300 @@ app.post('/api/tasks/:id/rollback', async (req, res) => {
 });
 
 // ─────────────────────────────────────────────
-// CONTROL DEL MOTOR IA
+// CONFIGURACIÓN DEL MOTOR IA (engine)
 // ─────────────────────────────────────────────
-const { spawn } = require('child_process');
-const CLI_PATH = path.join(__dirname, '../../src/cli/index.js');
+// Usar ruta fija para que loop.js lo encuentre siempre
+const ENGINE_FILE = '/tmp/ai-kanban-engine.json';
 
-let loopProcess = null;
+function readEngine() {
+  try {
+    if (fs.existsSync(ENGINE_FILE)) {
+      const data = JSON.parse(fs.readFileSync(ENGINE_FILE, 'utf8'));
+      if (data.engine) return data;
+    }
+  } catch {}
+  return { engine: 'opencode' };
+}
+
+function writeEngine(data) {
+  fs.writeFileSync(ENGINE_FILE, JSON.stringify(data, null, 2), 'utf8');
+}
+
+app.get('/api/engine', (req, res) => {
+  res.json({ success: true, ...readEngine() });
+});
+
+app.post('/api/engine', (req, res) => {
+  const { engine } = req.body;
+  if (!['claude', 'opencode'].includes(engine)) {
+    return res.status(400).json({ success: false, error: 'Motor no válido. Opciones: claude, opencode' });
+  }
+  writeEngine({ engine });
+  console.log(`[Engine] Guardado: ${engine} en ${ENGINE_FILE}`);
+  broadcastChange('engine:changed', { engine });
+  res.json({ success: true, engine });
+});
+
+// ─────────────────────────────────────────────
+// CONTROL DEL MOTOR IA — abre gnome-terminal
+// ─────────────────────────────────────────────
+const { spawn, execSync } = require('child_process');
+const CLI_PATH  = path.join(__dirname, '../../src/cli/index.js');
+const PID_FILE  = '/tmp/kanban-loop.pid';
+const TASK_STATUS_FILE = '/tmp/kanban-task-status.json';
+
+/** Lee el PID del loop desde el archivo, o null si no existe / muerto */
+function readLoopPid() {
+  try {
+    const pid = parseInt(fs.readFileSync(PID_FILE, 'utf8'));
+    process.kill(pid, 0);
+    return pid;
+  } catch {
+    try { fs.unlinkSync(PID_FILE); } catch {}
+    return null;
+  }
+}
 
 function getLoopStatus() {
-  if (!loopProcess || loopProcess.exitCode !== null) return 'stopped';
-  return 'running';
+  return readLoopPid() !== null ? 'running' : 'stopped';
+}
+
+// Polling para detectar cuando termina una tarea
+let taskPollInterval = null;
+function startTaskPolling(taskId, engine) {
+  if (taskPollInterval) clearInterval(taskPollInterval);
+  
+  taskPollInterval = setInterval(() => {
+    try {
+      if (fs.existsSync(TASK_STATUS_FILE)) {
+        const status = JSON.parse(fs.readFileSync(TASK_STATUS_FILE, 'utf8'));
+        if (status.taskId === taskId && status.status === 'done') {
+          clearInterval(taskPollInterval);
+          taskPollInterval = null;
+          
+          // Mover tarea a done
+          const kanbanPath = getActiveKanbanPath();
+          moveTask(taskId, 'done', kanbanPath);
+          broadcastChange('task:completed', { taskId, title: status.title });
+          
+          // Notificación del sistema
+          spawn('notify-send', ['AI-Kanban', `Tarea #${taskId} completada: ${status.title}`]);
+          
+          // Limpiar archivo de estado
+          fs.unlinkSync(TASK_STATUS_FILE);
+          
+          // Buscar siguiente tarea
+          setTimeout(() => processNextTask(engine), 2000);
+        }
+      }
+    } catch {}
+  }, 2000);
+}
+
+// Crear script para ejecutar tarea
+function createTaskScript(task, engine) {
+  const taskId = task.id;
+  const taskTitle = (task.title || '').replace(/'/g, "'\\''");
+  const taskContent = (task.content || '').replace(/'/g, "'\\''");
+  const prompt = `TAREA #${taskId}: ${taskTitle}. ${taskContent}`;
+  
+  const script = `#!/bin/bash
+cd /home/phantom/Documents/proyectos/tennat-app-com
+
+echo ""
+echo "════════════════════════════════════════════════════════════════"
+echo "  AI-KANBAN - TAREA #${taskId}"
+echo "  ${taskTitle}"
+echo "════════════════════════════════════════════════════════════════"
+echo ""
+echo "  Motor: ${engine.toUpperCase()}"
+echo "  Estado: Trabajando..."
+echo ""
+
+# Ejecutar IA
+${engine === 'opencode' 
+  ? `opencode run '${prompt}' --dir /home/phantom/Documents/proyectos/tennat-app-com`
+  : `claude -p '${prompt}' --dangerously-skip-permissions`}
+
+EXIT_CODE=$?
+
+echo ""
+echo "════════════════════════════════════════════════════════════════"
+if [ $EXIT_CODE -eq 0 ]; then
+  echo "  ✓ Tarea completada"
+else
+  echo "  ✗ Error: código $EXIT_CODE"
+fi
+echo "════════════════════════════════════════════════════════════════"
+echo ""
+echo "  Cerrando en 2 segundos..."
+sleep 2
+
+# Guardar estado de completado
+echo '{"taskId":${taskId},"status":"done","title":"${taskTitle}"}' > ${TASK_STATUS_FILE}
+exit
+`;
+  
+  const scriptPath = `/tmp/ai-kanban-task-${taskId}.sh`;
+  fs.writeFileSync(scriptPath, script, { mode: 0o755 });
+  return scriptPath;
+}
+
+// Auto-start: procesar tareas automáticamente al iniciar
+let autoProcessInterval = null;
+
+function startAutoProcessing() {
+  if (autoProcessInterval) return;
+  
+  autoProcessInterval = setInterval(async () => {
+    const kanbanPath = getActiveKanbanPath();
+    const todoTasks = getTasks('todo', kanbanPath);
+    const inProgressTasks = getTasks('in_progress', kanbanPath);
+    
+    // Si hay tareas en TODO y ninguna en progreso, empezar una
+    if (todoTasks.length > 0 && inProgressTasks.length === 0) {
+      console.log('[Auto] Iniciando siguiente tarea automáticamente...');
+      const engineData = readEngine();
+      const engine = engineData.engine || 'opencode';
+      await processNextTask(engine);
+    }
+  }, 5000); // Revisar cada 5 segundos
+}
+
+function stopAutoProcessing() {
+  if (autoProcessInterval) {
+    clearInterval(autoProcessInterval);
+    autoProcessInterval = null;
+  }
+}
+
+// Procesar siguiente tarea automáticamente
+async function processNextTask(engine) {
+  const kanbanPath = getActiveKanbanPath();
+  const todoTasks = getTasks('todo', kanbanPath);
+  const task = todoTasks[0];
+  
+  if (!task) {
+    broadcastChange('loop:stopped', {});
+    return;
+  }
+  
+  const title = `AI-Kanban — ${engine.toUpperCase()}`;
+  const scriptPath = createTaskScript(task, engine);
+  
+  spawn('gnome-terminal', ['--title', title, '--', 'bash', '-c', `bash '${scriptPath}'`], { detached: true, stdio: 'ignore' }).unref();
+  moveTask(task.id, 'in_progress', kanbanPath);
+  broadcastChange('loop:started', { taskId: task.id });
+  startTaskPolling(task.id, engine);
 }
 
 /**
- * GET /api/loop/status - Estado del motor IA
+ * GET /api/loop/status
  */
 app.get('/api/loop/status', (req, res) => {
-  res.json({ status: getLoopStatus(), pid: loopProcess?.pid || null });
+  const pid = readLoopPid();
+  res.json({ status: pid ? 'running' : 'stopped', pid: pid || null });
 });
 
 /**
- * POST /api/loop/start - Arrancar el motor IA
+ * POST /api/loop/start — inicia el procesamiento automático
  */
-app.post('/api/loop/start', (req, res) => {
-  if (getLoopStatus() === 'running') {
-    return res.json({ success: false, error: 'El motor ya está corriendo' });
+app.post('/api/loop/start', async (req, res) => {
+  const engineData = readEngine();
+  const engine = engineData.engine || 'opencode';
+
+  // Leer la primera tarea en TODO
+  const kanbanPath = getActiveKanbanPath();
+  const todoTasks = getTasks('todo', kanbanPath);
+  const task = todoTasks[0];
+
+  if (!task) {
+    return res.json({ success: false, error: 'No hay tareas en TODO' });
   }
 
-  loopProcess = spawn('node', [CLI_PATH, 'start'], {
-    stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...process.env },
-  });
+  // Iniciar procesamiento automático
+  startAutoProcessing();
 
-  loopProcess.stdout.on('data', (d) => {
-    const line = d.toString().trim();
-    if (line) {
-      broadcastChange('loop:log', { line });
-      process.stdout.write('[loop] ' + line + '\n');
-    }
-  });
-  loopProcess.stderr.on('data', (d) => {
-    const line = d.toString().trim();
-    if (line) broadcastChange('loop:log', { line, level: 'error' });
-  });
-  loopProcess.on('exit', (code) => {
-    broadcastChange('loop:stopped', { code });
-  });
+  const scriptPath = createTaskScript(task, engine);
 
-  broadcastChange('loop:started', { pid: loopProcess.pid });
-  res.json({ success: true, pid: loopProcess.pid });
+  // Abrir terminal
+  spawn('gnome-terminal', ['--title', `AI-Kanban — ${engine.toUpperCase()}`, '--', 'bash', '-c', `bash '${scriptPath}'`], { detached: true, stdio: 'ignore' }).unref();
+
+  // Mover tarea a in_progress
+  moveTask(task.id, 'in_progress', kanbanPath);
+  broadcastChange('loop:started', { taskId: task.id });
+
+  // Iniciar polling para detectar cuando termine
+  startTaskPolling(task.id, engine);
+
+  res.json({ success: true, engine, taskId: task.id, title: task.title, message: 'Procesamiento automático iniciado' });
 });
 
 /**
- * POST /api/loop/stop - Detener el motor IA
+ * POST /api/loop/stop — detiene el procesamiento de tareas
  */
 app.post('/api/loop/stop', (req, res) => {
-  if (getLoopStatus() !== 'running') {
-    return res.json({ success: false, error: 'El motor no está corriendo' });
+  stopAutoProcessing();
+  if (taskPollInterval) {
+    clearInterval(taskPollInterval);
+    taskPollInterval = null;
   }
-  loopProcess.kill('SIGTERM');
+  try { fs.unlinkSync(TASK_STATUS_FILE); } catch {}
+  broadcastChange('loop:stopped', {});
+  res.json({ success: true, message: 'Procesamiento automático detenido' });
+});
+
+/**
+ * POST /api/loop/start — abre una terminal con la IA y la tarea
+ */
+app.post('/api/loop/start', async (req, res) => {
+  const engineData = readEngine();
+  const engine = engineData.engine || 'opencode';
+  const title = `AI-Kanban — ${engine.toUpperCase()}`;
+
+  // Leer la primera tarea en TODO
+  const kanbanPath = getActiveKanbanPath();
+  const todoTasks = getTasks('todo', kanbanPath);
+  const task = todoTasks[0];
+
+  if (!task) {
+    return res.json({ success: false, error: 'No hay tareas en TODO' });
+  }
+
+  // Prompt simple
+  const prompt = `TAREA #${task.id}: ${task.title}. ${task.content || ''}`.replace(/'/g, "'\\''");
+
+  // Comando: ejecuta IA, guarda estado cuando termina, y cierra
+  let cmd;
+  if (engine === 'opencode') {
+    cmd = `cd /home/phantom/Documents/proyectos/tennat-app-com && opencode run '${prompt}' --dir /home/phantom/Documents/proyectos/tennat-app-com; echo '{"taskId":${task.id},"status":"done","title":"${task.title.replace(/"/g, '\\"')}"}' > ${TASK_STATUS_FILE}; exit`;
+  } else {
+    cmd = `cd /home/phantom/Documents/proyectos/tennat-app-com && claude '${prompt}' --dangerously-skip-permissions; echo '{"taskId":${task.id},"status":"done","title":"${task.title.replace(/"/g, '\\"')}"}' > ${TASK_STATUS_FILE}; exit`;
+  }
+
+  // Abrir terminal
+  spawn('gnome-terminal', ['--title', title, '--', 'bash', '-c', cmd], { detached: true, stdio: 'ignore' }).unref();
+
+  // Mover tarea a in_progress
+  moveTask(task.id, 'in_progress', kanbanPath);
+  broadcastChange('loop:started', { taskId: task.id });
+
+  // Iniciar polling para detectar cuando termine
+  startTaskPolling(task.id, engine);
+
+  res.json({ success: true, engine, taskId: task.id, title: task.title });
+});
+
+/**
+ * POST /api/loop/stop — detiene el procesamiento de tareas
+ */
+app.post('/api/loop/stop', (req, res) => {
+  if (taskPollInterval) {
+    clearInterval(taskPollInterval);
+    taskPollInterval = null;
+  }
+  try { fs.unlinkSync(TASK_STATUS_FILE); } catch {}
+  broadcastChange('loop:stopped', {});
   res.json({ success: true });
 });
 

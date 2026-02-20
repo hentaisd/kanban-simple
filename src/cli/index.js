@@ -75,11 +75,37 @@ program
   .description('Iniciar el motor de automatización IA (loop infinito)')
   .option('--once', 'Procesar solo la primera tarea y terminar')
   .option('--dry-run', 'Simular ejecución sin cambios reales')
+  .option('--interactive', 'Modo interactivo: puedes escribir comandos a la IA')
   .option('--project <path>', 'Ruta del proyecto donde trabaja el agente (sobreescribe config)')
   .option('--engine <engine>', 'CLI a usar: claude | opencode (sobreescribe config)')
   .action(async (options) => {
     const { startCommand } = require('./commands/start');
     await startCommand(options);
+  });
+
+// ─────────────────────────────────────────────
+// COMANDO: interactive (alias rápido)
+// ─────────────────────────────────────────────
+program
+  .command('interactive [prompt]')
+  .alias('i')
+  .description('Abrir sesión interactiva con la IA (sin procesar tareas)')
+  .option('--project <path>', 'Ruta del proyecto')
+  .option('--engine <engine>', 'CLI a usar: claude | opencode')
+  .action(async (prompt, options) => {
+    const { runInteractiveSession, detectAvailableEngine, notify } = require('../../core/ai-executor');
+    const path = require('path');
+    
+    const projectPath = options.project || process.cwd();
+    const engine = detectAvailableEngine(options.engine || 'claude');
+    
+    if (!engine) {
+      console.log(chalk.red('\n  ❌ No se encontró ningún CLI (claude ni opencode).\n'));
+      process.exit(1);
+    }
+    
+    await runInteractiveSession(engine, projectPath, prompt || null);
+    notify('AI-Kanban', 'Sesión interactiva finalizada');
   });
 
 // ─────────────────────────────────────────────

@@ -37,11 +37,47 @@ class GitService {
   }
 
   /**
-   * Checkout a un branch existente
+   * Guarda los cambios pendientes con stash si los hay.
+   * @returns {boolean} true si se hizo stash
+   */
+  async stashIfNeeded() {
+    const status = await this.git.status();
+    const dirty = status.modified.length + status.created.length +
+                  status.deleted.length + status.staged.length +
+                  status.not_added.length;
+    if (dirty > 0) {
+      console.log(chalk.gray('  git stash push (cambios pendientes antes del checkout)'));
+      await this.git.stash(['push', '-m', 'kanban-pre-checkout']);
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Checkout a un branch.
+   * Si no existe localmente: intenta fetch+checkout desde remote.
+   * Si tampoco existe en remote: lo crea nuevo desde HEAD actual.
    */
   async checkout(branch) {
     console.log(chalk.gray(`  git checkout ${branch}`));
-    await this.git.checkout(branch);
+    try {
+      await this.git.checkout(branch);
+    } catch (err) {
+      if (err.message.includes('pathspec') || err.message.includes('did not match')) {
+        // Intentar traer del remote
+        try {
+          console.log(chalk.gray(`  Branch '${branch}' no existe localmente — fetch desde origin...`));
+          await this.git.fetch('origin', branch);
+          await this.git.checkout(['-b', branch, `origin/${branch}`]);
+        } catch {
+          // No está en el remote tampoco — crear nuevo
+          console.log(chalk.gray(`  Creando branch '${branch}' desde HEAD actual`));
+          await this.git.checkoutLocalBranch(branch);
+        }
+      } else {
+        throw err;
+      }
+    }
   }
 
   /**

@@ -14,14 +14,28 @@
  */
 
 const path = require('path');
+const fs   = require('fs');
 const chalk = require('chalk');
 const { getTasks, moveTask, getTaskById } = require('../kanban/board');
 const { writeTask, getKanbanPath } = require('./task');
-const { executeTask, detectAvailableEngine } = require('./ai-executor');
+const { executeTask, detectAvailableEngine, killCurrentPhase, notify } = require('./ai-executor');
 const { saveExecution } = require('./history');
 const GitService = require('../git/gitService');
 
-const fs = require('fs');
+// ── PID file ──────────────────────────────────────────────────
+const PID_FILE = '/tmp/kanban-loop.pid';
+fs.writeFileSync(PID_FILE, String(process.pid));
+const cleanPid = () => { try { fs.unlinkSync(PID_FILE); } catch {} };
+process.on('exit', cleanPid);
+process.on('uncaughtException', (err) => { cleanPid(); console.error(err); process.exit(1); });
+
+// Al recibir SIGTERM: matar el subprocess de IA y salir limpiamente
+process.on('SIGTERM', () => {
+  console.log(chalk.yellow('\n  ⏹ Señal de parada — terminando tarea actual...'));
+  killCurrentPhase();
+  setTimeout(() => process.exit(0), 500);
+});
+
 const KANBAN_ROOT = path.resolve(__dirname, '../../');
 const KANBAN_DIR = path.join(KANBAN_ROOT, 'kanban');
 const ACTIVE_PROJECT_FILE = path.join(KANBAN_DIR, '.active-project.json');
@@ -41,11 +55,37 @@ function loadConfig(overrides = {}) {
     cfg = {};
   }
 
+  // Leer engine desde archivo global (compartido con UI)
+  const engineFile = '/tmp/ai-kanban-engine.json';
+  let savedEngine = null;
+  try {
+    if (fs.existsSync(engineFile)) {
+      const engineData = JSON.parse(fs.readFileSync(engineFile, 'utf8'));
+      savedEngine = engineData.engine;
+    }
+  } catch {}
+
+  // Variable de entorno AI_ENGINE tiene prioridad (viene del UI)
+  const envEngine = process.env.AI_ENGINE || null;
+  
+  // Orden de prioridad: CLI flag > env var > archivo guardado > config > default
+  const finalEngine = overrides.engine || envEngine || savedEngine || cfg.engine || 'opencode';
+  
+  // Debug: mostrar de dónde viene el engine
+  console.log(chalk.cyan(`  Motor IA: ${chalk.bold(finalEngine)}`));
+  if (overrides.engine) {
+    console.log(chalk.gray(`    (desde CLI: --engine ${overrides.engine})`));
+  } else if (envEngine) {
+    console.log(chalk.gray(`    (desde variable de entorno)`));
+  } else if (savedEngine) {
+    console.log(chalk.gray(`    (desde configuración guardada)`));
+  }
+
   return {
     projects:       cfg.projects      || {},
     defaultProject: cfg.defaultProject || '',
     projectPath:    overrides.project || cfg.projectPath || process.cwd(),
-    engine:         overrides.engine  || cfg.engine      || 'claude',
+    engine:         finalEngine,
     git: {
       enabled:       cfg.git?.enabled       ?? true,
       defaultBranch: cfg.git?.defaultBranch ?? 'main',
@@ -100,21 +140,6 @@ function resolveGitConfig(config) {
     defaultBranch: projectGit.defaultBranch ?? config.git.defaultBranch,
     autoPush:      projectGit.autoPush      ?? config.git.autoPush,
     autoMerge:     projectGit.autoMerge     ?? config.git.autoMerge,
-  };
-}
-
-/**
- * Resuelve la config git para un proyecto.
- * El proyecto puede tener su propia config git que sobreescribe la global.
- */
-function resolveGitConfig(task, config) {
-  const ref = task.projectPath;
-  const projectCfg = ref && config.projects[ref] ? config.projects[ref] : null;
-  return {
-    enabled:       projectCfg?.git?.enabled       ?? config.git.enabled,
-    defaultBranch: projectCfg?.git?.defaultBranch ?? config.git.defaultBranch,
-    autoPush:      projectCfg?.git?.autoPush      ?? config.git.autoPush,
-    autoMerge:     projectCfg?.git?.autoMerge     ?? config.git.autoMerge,
   };
 }
 
@@ -181,7 +206,7 @@ function updateTaskFields(taskId, fields, kanbanPath) {
 // ─────────────────────────────────────────────
 
 async function processTask(task, config) {
-  const { engine } = config;
+  const { engine, interactive } = config;
 
   const taskProjectPath = resolveProjectPath(config);
   const kanbanPath = getKanbanPath(taskProjectPath);
@@ -193,7 +218,11 @@ async function processTask(task, config) {
   console.log(chalk.gray(`  tipo: ${task.type}  |  prioridad: ${task.priority}`));
   console.log(chalk.gray(`  branch: ${task.branch}`));
   console.log(chalk.gray(`  proyecto: ${chalk.white(taskProjectPath)}`));
-  console.log(chalk.gray(`  engine: ${chalk.white(engine)}\n`));
+  console.log(chalk.gray(`  engine: ${chalk.white(engine)}`));
+  if (interactive) {
+    console.log(chalk.magenta(`  modo: INTERACTIVO`));
+  }
+  console.log('');
 
   // ── PASO 1: todo → in_progress + actualizar startedAt ───
   moveTask(task.id, 'in_progress', kanbanPath);
@@ -210,8 +239,10 @@ async function processTask(task, config) {
       const isRepo = await gitService.isGitRepo();
       if (isRepo) {
         gitEnabled = true;
-        console.log(chalk.cyan(`  ▶ Git: checkout ${gitCfg.defaultBranch}`));
         try {
+          const stashed = await gitService.stashIfNeeded();
+          if (stashed) console.log(chalk.cyan('  ▶ Git: cambios pendientes guardados con stash'));
+          console.log(chalk.cyan(`  ▶ Git: checkout ${gitCfg.defaultBranch}`));
           await gitService.checkout(gitCfg.defaultBranch);
           await gitService.createBranch(task.branch);
           console.log(chalk.cyan(`  ▶ Git: branch ${task.branch} creado`));
@@ -224,7 +255,7 @@ async function processTask(task, config) {
     }
 
     // ── PASO 3: ejecutar con CLI ─────────────
-    taskResult = await executeTask(task, { projectPath: taskProjectPath, engine });
+    taskResult = await executeTask(task, { projectPath: taskProjectPath, engine, kanbanPath, interactive });
 
     // ── PASO 4: git add + commit ─────────────
     if (gitEnabled && taskResult?.success) {
@@ -272,7 +303,7 @@ async function processTask(task, config) {
   const now = new Date().toISOString();
 
   // ── PASO 5: mover a done o review + timestamps ───────────
-  if (taskResult?.success) {
+  if (taskResult?.success && !taskResult.scopeIncomplete) {
     moveTask(task.id, 'done', kanbanPath);
     updateTaskFields(task.id, {
       completedAt: now,
@@ -282,6 +313,14 @@ async function processTask(task, config) {
     if (taskResult.iterations > 1) {
       console.log(chalk.gray(`     (completado en ${taskResult.iterations} iteraciones)`));
     }
+  } else if (taskResult?.success && taskResult.scopeIncomplete) {
+    moveTask(task.id, 'review', kanbanPath);
+    updateTaskFields(task.id, {
+      completedAt: now,
+      iterations: taskResult.iterations || 1,
+    }, kanbanPath);
+    console.log(chalk.yellow(`\n  ⚠ SCOPE INCOMPLETO → REVIEW`));
+    console.log(chalk.yellow(`     ${taskResult.scopeNote}`));
   } else {
     moveTask(task.id, 'review', kanbanPath);
     updateTaskFields(task.id, { completedAt: now }, kanbanPath);
@@ -301,6 +340,7 @@ async function processTask(task, config) {
           code: taskResult.phasesRecord.code,
           review: taskResult.phasesRecord.review,
           test: taskResult.phasesRecord.test,
+          scope: taskResult.phasesRecord.scope,
         },
       });
     } catch (err) {
@@ -319,6 +359,7 @@ async function startLoop(cliOverrides = {}) {
   const config = loadConfig(cliOverrides);
   const { waitSeconds, maxTasksPerRun } = config.loop;
   const dryRun = cliOverrides.dryRun || false;
+  const interactive = cliOverrides.interactive || false;
 
   // Validar que el engine esté disponible
   const engine = detectAvailableEngine(config.engine);
@@ -332,7 +373,11 @@ async function startLoop(cliOverrides = {}) {
   console.log(chalk.gray(`  Proyecto : ${config.projectPath}`));
   console.log(chalk.gray(`  Engine   : ${engine || 'dry-run'}`));
   console.log(chalk.gray(`  Git      : ${config.git.enabled ? 'activado' : 'desactivado'}`));
-  console.log(chalk.gray(`  Espera   : ${waitSeconds}s entre ciclos\n`));
+  console.log(chalk.gray(`  Espera   : ${waitSeconds}s entre ciclos`));
+  if (interactive) {
+    console.log(chalk.magenta(`  Modo     : INTERACTIVO`));
+  }
+  console.log('');
 
   let cycle = 0;
   let processed = 0;
@@ -382,7 +427,7 @@ async function startLoop(cliOverrides = {}) {
       moveTask(taskToProcess.id, 'done', loopKanbanPath);
       console.log(chalk.green('  ✅ DONE (simulado)'));
     } else {
-      await processTask(taskToProcess, { ...config, engine });
+      await processTask(taskToProcess, { ...config, engine, interactive });
     }
 
     processed++;
@@ -396,6 +441,7 @@ async function startLoop(cliOverrides = {}) {
     await new Promise(r => setTimeout(r, 2000));
   }
 
+  notify('AI-Kanban', `Motor detenido. ${processed} tareas procesadas.`);
   console.log(chalk.blue('\n  Motor detenido.\n'));
 }
 
