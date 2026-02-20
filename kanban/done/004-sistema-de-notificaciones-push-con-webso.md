@@ -5,7 +5,7 @@ type: feature
 priority: media
 branch: feature/sistema-de-notificaciones-push-con-websockets
 labels: []
-status: todo
+status: done
 retryCount: 1
 lastRetryAt: '2026-02-20T19:52:15.976Z'
 ---

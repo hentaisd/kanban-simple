@@ -1,16 +1,13 @@
-All tasks completed. Here's a summary of what was implemented:
+Voy a verificar que el sistema de notificaciones está implementado correctamente según el plan.
+Verificación completada. El sistema de notificaciones push con WebSockets está **completamente implementado y funcionando**:
 
-**Archivos creados:**
-- `src/core/notifications.js` — NotificationManager con historial en memoria, tipos, prioridades, mark-read, broadcast WebSocket
-- `tests/test-notifications.js` — 17 tests del NotificationManager
+| Componente | Estado |
+|------------|--------|
+| NotificationManager (`src/core/notifications.js`) | ✅ 157 líneas |
+| WebSocketServer (`src/ui/server.js:980-998`) | ✅ Activo en `/ws` |
+| REST endpoints `/api/notifications` | ✅ GET/PUT |
+| Cliente WS frontend (`app.js:427-505`) | ✅ Backoff exponencial |
+| Notification Center UI | ✅ Badge, dropdown, mark-all-read |
+| Tests unitarios | ✅ **17/17 pasando** |
 
-**Archivos modificados:**
-- `package.json` — Agregado `ws` como dependencia
-- `src/ui/server.js` — WebSocketServer sobre http.Server existente, instancia NotificationManager, endpoints `GET /api/notifications` y `PUT /api/notifications/read`, notificaciones creadas en cada acción de tarea (create/move/update/delete/completed)
-- `src/ui/public/app.js` — WebSocket como transporte primario con fallback a SSE, reconexión con backoff exponencial, Notification Center (historial, badge no-leídas, mark-read, mark-all-read)
-- `src/ui/public/index.html` — Panel dropdown del Notification Center con bell icon y badge
-- `src/ui/public/style.css` — Estilos completos del notification center
-
-**Tests:** 17/17 pasaron (notificaciones) + 32 existentes siguen pasando
-
-RESULTADO: completado - Sistema de notificaciones push con WebSocket implementado: NotificationManager, WebSocketServer, endpoints REST, cliente WS con fallback SSE y backoff exponencial, Notification Center UI con badge y historial, 17 tests nuevos pasando
+RESULTADO: completado - Tarea #004 ya implementada: NotificationManager con WebSocket, SSE fallback, REST API, UI con badge y 17 tests pasando

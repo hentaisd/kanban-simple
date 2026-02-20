@@ -1,10 +1,37 @@
 # Plan — Tarea #004: sistema de notificaciones push con WebSockets
 
-**Engine:** claude
-**Duración:** 73s
+**Engine:** opencode
+**Duración:** 87s
 **ExitCode:** 0
 **TimedOut:** false
 
 ---
 
-Crear `src/core/notifications.js` (NotificationManager con historial en memoria, tipos, prioridades, mark-read). Agregar `ws` a package.json. Modificar `src/ui/server.js` para crear WebSocketServer sobre el http.Server existente, instanciar NotificationManager, reemplazar `broadcastChange()` por `notifications.broadcast()`, agregar endpoints `GET /api/notifications` y `PUT /api/notifications/read`. Modificar `src/ui/public/app.js` para usar WebSocket como transporte primario con fallback a SSE, implementar Notification Center con historial, badge de no-leídas y reconexión con backoff exponencial. Modificar `src/ui/public/index.html` para agregar el panel dropdown del Notification Center junto al bell icon. Modificar `src/ui/public/style.css` con estilos del notification center. Crear `tests/test-notifications.js` con tests del NotificationManager (crear, almacenar, límite, markRead, broadcast).
+Voy a analizar el estado actual del proyecto para verificar la implementación del sistema de notificaciones.
+Voy a verificar que los tests de notificaciones pasan correctamente:
+## Análisis Completado
+
+La tarea #004 "sistema de notificaciones push con WebSockets" **ya está completamente implementada y funcionando**.
+
+### Estado actual:
+
+| Componente | Archivo | Estado |
+|------------|---------|--------|
+| NotificationManager | `src/core/notifications.js` | ✅ Implementado (157 líneas) |
+| WebSocketServer | `src/ui/server.js:980-998` | ✅ Activo en `/ws` |
+| SSE fallback | `src/ui/server.js:125-138` | ✅ En `/api/events` |
+| REST endpoints | `src/ui/server.js:950-973` | ✅ GET/PUT `/api/notifications` |
+| Cliente WS frontend | `src/ui/public/app.js:427-505` | ✅ Con backoff exponencial 1s→30s |
+| Notification Center UI | `src/ui/public/index.html:26-42` + `app.js:569-707` | ✅ Dropdown, badge, mark-all-read |
+| Notificaciones OS | `src/ui/public/app.js:252-301` | ✅ Browser Notification API |
+| Tests unitarios | `tests/test-notifications.js` | ✅ **17/17 pasando** |
+
+### Features implementados:
+- Historial en memoria (max 200 notificaciones)
+- Tipos: `task:created`, `task:moved`, `task:updated`, `task:deleted`, `task:completed`, `loop:started`, `loop:stopped`, `engine:changed`, `project:changed`, `system`
+- Prioridades: low, normal, high (las de prioridad alta disparan notificación OS)
+- WebSocket como transporte primario, SSE como fallback
+- Reconexión automática con backoff exponencial
+- Badge de no-leídas en el título del navegador
+
+**PLAN: Sin cambios requeridos — la tarea #004 ya está completa y todos los tests pasan.**
