@@ -19,6 +19,12 @@ let draggedCard = null;     // { taskId, fromColumn }
 let editingTaskId = null;   // ID de tarea en edición
 let currentDetailTaskId = null; // ID de tarea en modal detalle
 let notifPermission = 'default'; // 'granted' | 'denied' | 'default'
+let wsConnection = null;         // WebSocket instance
+let wsReconnectDelay = 1000;     // backoff exponencial para reconexión WS
+let wsReconnectTimer = null;
+let notificationsList = [];      // historial de notificaciones
+let notifCenterOpen = false;     // si el dropdown está abierto
+let unreadNotifCount = 0;        // badge de no-leídas
 let metricsVisible = false;
 let registeredProjects = []; // proyectos desde kanban.config.js
 
@@ -30,10 +36,11 @@ document.addEventListener('DOMContentLoaded', () => {
   loadTasks();
   loadProjects();
   loadEngine();
-  setupSSE();
+  setupWebSocket();
   setupKeyboardShortcuts();
   initNotifications();
   initLoopStatus();
+  loadNotifications();
 });
 
 // ─────────────────────────────────────────────
@@ -218,11 +225,23 @@ function setupKeyboardShortcuts() {
     if (e.key === 'Escape') {
       closeModal('taskModal');
       closeModal('detailModal');
+      if (notifCenterOpen) toggleNotifCenter();
     }
     // Ctrl/Cmd + N: nueva tarea
     if ((e.ctrlKey || e.metaKey) && e.key === 'n') {
       e.preventDefault();
       openCreateModal();
+    }
+  });
+
+  // Cerrar notification center al hacer click fuera
+  document.addEventListener('click', (e) => {
+    if (notifCenterOpen) {
+      const panel = document.getElementById('notifCenter');
+      const btn = document.getElementById('notifBellBtn');
+      if (panel && btn && !panel.contains(e.target) && !btn.contains(e.target)) {
+        toggleNotifCenter();
+      }
     }
   });
 }
@@ -403,8 +422,91 @@ async function removeProject(name) {
 }
 
 // ─────────────────────────────────────────────
-// SSE - Sincronización en tiempo real
+// WEBSOCKET - Transporte primario con fallback a SSE
 // ─────────────────────────────────────────────
+function setupWebSocket() {
+  if (wsReconnectTimer) {
+    clearTimeout(wsReconnectTimer);
+    wsReconnectTimer = null;
+  }
+
+  const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const wsUrl = `${protocol}//${location.host}/ws`;
+
+  try {
+    wsConnection = new WebSocket(wsUrl);
+  } catch {
+    console.warn('WebSocket no disponible, usando SSE');
+    setupSSE();
+    return;
+  }
+
+  wsConnection.onopen = () => {
+    wsReconnectDelay = 1000; // reset backoff
+    document.getElementById('statusDot').style.background = '#10b981';
+    document.getElementById('statusText').textContent = 'En vivo (WS)';
+    initLoopStatus();
+  };
+
+  wsConnection.onmessage = (event) => {
+    try {
+      const { event: evt, data } = JSON.parse(event.data);
+
+      if (evt === 'connected') {
+        if (data.unreadCount !== undefined) {
+          unreadNotifCount = data.unreadCount;
+          updateNotifBadge();
+        }
+        return;
+      }
+
+      // Nueva notificación push
+      if (evt === 'notification') {
+        addNotificationToCenter(data);
+        return;
+      }
+
+      // Notificación marcada como leída
+      if (evt === 'notification:read') {
+        markNotifReadInUI(data.id);
+        return;
+      }
+
+      // Todas leídas
+      if (evt === 'notification:allRead') {
+        unreadNotifCount = 0;
+        updateNotifBadge();
+        notificationsList.forEach(n => n.read = true);
+        renderNotificationCenter();
+        return;
+      }
+
+      // Board changes (mismo que SSE)
+      if (evt === 'board:change') {
+        handleBoardEvent(data);
+        return;
+      }
+    } catch {}
+  };
+
+  wsConnection.onclose = () => {
+    document.getElementById('statusDot').style.background = '#ef4444';
+    document.getElementById('statusText').textContent = 'Reconectando...';
+    // Reconexión con backoff exponencial
+    wsReconnectTimer = setTimeout(() => {
+      wsReconnectDelay = Math.min(wsReconnectDelay * 2, 30000);
+      setupWebSocket();
+    }, wsReconnectDelay);
+  };
+
+  wsConnection.onerror = () => {
+    // onclose se disparará después, no duplicar lógica
+  };
+}
+
+/**
+ * SSE fallback (se usa si WebSocket falla)
+ */
 function setupSSE() {
   const es = new EventSource('/api/events');
 
@@ -412,32 +514,7 @@ function setupSSE() {
     try {
       const data = JSON.parse(event.data);
       if (data.type === 'connected') return;
-
-      // Cambio de proyecto activo → recargar proyectos + tareas
-      if (data.type === 'project:changed' || data.type === 'projects:updated') {
-        loadProjects();
-        loadTasks(false);
-        return;
-      }
-
-      // Eventos del loop
-      if (data.type === 'loop:started') { setLoopUI(true); addLogLine('▶ Motor IA iniciado', 'info'); return; }
-      if (data.type === 'loop:stopped') { setLoopUI(false); addLogLine('⏹ Motor IA detenido', ''); loadTasks(false); return; }
-      if (data.type === 'loop:log') { addLogLine(data.line || '', data.level || ''); return; }
-      if (data.type === 'engine:changed') { setEngineUI(data.engine); return; }
-
-      loadTasks(false);
-
-      // Notificación OS + badge en título
-      if (data.type === 'task:completed') {
-        const label = data.title || 'Tarea completada';
-        sendOSNotification('✅ Tarea completada', label);
-        flashTitleBadge();
-      } else if (data.type === 'task:review') {
-        const label = data.title || 'Tarea en review';
-        sendOSNotification('🔍 Tarea en review', label);
-        flashTitleBadge();
-      }
+      handleBoardEvent(data);
     } catch {}
   };
 
@@ -452,10 +529,172 @@ function setupSSE() {
 
   es.onopen = () => {
     document.getElementById('statusDot').style.background = '#10b981';
-    document.getElementById('statusText').textContent = 'En vivo';
-    // Resincronizar estado del motor por si se perdió algún evento mientras estaba desconectado
+    document.getElementById('statusText').textContent = 'En vivo (SSE)';
     initLoopStatus();
   };
+}
+
+/**
+ * Maneja eventos de cambios del board (compartido entre WS y SSE)
+ */
+function handleBoardEvent(data) {
+  // Cambio de proyecto activo
+  if (data.type === 'project:changed' || data.type === 'projects:updated') {
+    loadProjects();
+    loadTasks(false);
+    return;
+  }
+
+  // Eventos del loop
+  if (data.type === 'loop:started') { setLoopUI(true); addLogLine('▶ Motor IA iniciado', 'info'); return; }
+  if (data.type === 'loop:stopped') { setLoopUI(false); addLogLine('⏹ Motor IA detenido', ''); loadTasks(false); return; }
+  if (data.type === 'loop:log') { addLogLine(data.line || '', data.level || ''); return; }
+  if (data.type === 'engine:changed') { setEngineUI(data.engine); return; }
+
+  loadTasks(false);
+
+  // Notificación OS + badge en título
+  if (data.type === 'task:completed') {
+    const label = data.title || 'Tarea completada';
+    sendOSNotification('Tarea completada', label);
+    flashTitleBadge();
+  } else if (data.type === 'task:review') {
+    const label = data.title || 'Tarea en review';
+    sendOSNotification('Tarea en review', label);
+    flashTitleBadge();
+  }
+}
+
+// ─────────────────────────────────────────────
+// NOTIFICATION CENTER
+// ─────────────────────────────────────────────
+async function loadNotifications() {
+  try {
+    const res = await fetch('/api/notifications?limit=50');
+    const { success, data, unreadCount } = await res.json();
+    if (!success) return;
+    notificationsList = data;
+    unreadNotifCount = unreadCount;
+    updateNotifBadge();
+    renderNotificationCenter();
+  } catch {}
+}
+
+function addNotificationToCenter(notif) {
+  // Agregar al inicio (ya viene más reciente primero del servidor pero esta es push)
+  notificationsList.unshift(notif);
+  if (notificationsList.length > 100) notificationsList = notificationsList.slice(0, 100);
+  if (!notif.read) {
+    unreadNotifCount++;
+    updateNotifBadge();
+  }
+  renderNotificationCenter();
+
+  // OS notification para las de prioridad alta
+  if (notif.priority === 'high') {
+    sendOSNotification(notif.title, notif.message);
+    flashTitleBadge();
+  }
+}
+
+function markNotifReadInUI(id) {
+  const notif = notificationsList.find(n => n.id === id);
+  if (notif && !notif.read) {
+    notif.read = true;
+    unreadNotifCount = Math.max(0, unreadNotifCount - 1);
+    updateNotifBadge();
+    renderNotificationCenter();
+  }
+}
+
+function updateNotifBadge() {
+  const badge = document.getElementById('notifBadge');
+  if (!badge) return;
+  if (unreadNotifCount > 0) {
+    badge.textContent = unreadNotifCount > 99 ? '99+' : unreadNotifCount;
+    badge.style.display = 'flex';
+  } else {
+    badge.style.display = 'none';
+  }
+}
+
+function toggleNotifCenter() {
+  notifCenterOpen = !notifCenterOpen;
+  const panel = document.getElementById('notifCenter');
+  if (panel) {
+    panel.classList.toggle('open', notifCenterOpen);
+  }
+  if (notifCenterOpen) {
+    renderNotificationCenter();
+  }
+}
+
+function renderNotificationCenter() {
+  const list = document.getElementById('notifList');
+  if (!list) return;
+
+  if (notificationsList.length === 0) {
+    list.innerHTML = '<div class="notif-empty">Sin notificaciones</div>';
+    return;
+  }
+
+  list.innerHTML = notificationsList.map(n => {
+    const time = new Date(n.timestamp).toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit' });
+    const icon = getNotifIcon(n.type);
+    const readClass = n.read ? 'notif-read' : 'notif-unread';
+    const priorityClass = n.priority === 'high' ? 'notif-high' : '';
+    return `
+      <div class="notif-item ${readClass} ${priorityClass}" onclick="markNotifRead(${n.id})">
+        <span class="notif-icon">${icon}</span>
+        <div class="notif-content">
+          <div class="notif-title">${escapeHtml(n.title)}</div>
+          <div class="notif-message">${escapeHtml(n.message)}</div>
+        </div>
+        <span class="notif-time">${time}</span>
+      </div>
+    `;
+  }).join('');
+}
+
+function getNotifIcon(type) {
+  const icons = {
+    'task:created': '+',
+    'task:moved': '→',
+    'task:updated': '~',
+    'task:deleted': '×',
+    'task:completed': '✓',
+    'loop:started': '▶',
+    'loop:stopped': '⏹',
+    'engine:changed': '⚙',
+    'project:changed': '📁',
+    'system': 'ℹ',
+  };
+  return icons[type] || '•';
+}
+
+async function markNotifRead(id) {
+  try {
+    await fetch('/api/notifications/read', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id }),
+    });
+    markNotifReadInUI(id);
+  } catch {}
+}
+
+async function markAllNotifsRead() {
+  try {
+    await fetch('/api/notifications/read', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    notificationsList.forEach(n => n.read = true);
+    unreadNotifCount = 0;
+    updateNotifBadge();
+    renderNotificationCenter();
+  } catch {}
 }
 
 let titleBadgeTimer = null;

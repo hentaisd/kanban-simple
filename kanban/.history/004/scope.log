@@ -1,0 +1,19 @@
+## Resumen de Validación
+
+### Criterios verificados:
+
+| Criterio | Estado | Detalle |
+|----------|--------|---------|
+| Funcionalidad implementada y funcionando | OK | NotificationManager completo, WebSocketServer en /ws, endpoints REST, cliente WS con fallback SSE, Notification Center UI |
+| Tests pasan correctamente | OK | 17/17 tests pasan (create, store, limit, markRead, markAllRead, broadcast WS, prioridades, meta, IDs, tipos) |
+| Código documentado | OK | JSDoc en métodos públicos, secciones comentadas en server.js y app.js |
+
+### Integración verificada:
+- `ws` ^8.19.0 en package.json
+- WebSocketServer montado sobre el mismo http.Server Express
+- `broadcastChange()` alimenta tanto SSE como WS
+- Todas las operaciones CRUD de tareas generan notificaciones tipadas
+- SSE preservado como fallback funcional
+- UI: bell icon con badge, dropdown panel, mark-all-read, OS notifications para prioridad alta, click-outside para cerrar, Escape key
+
+SCOPE: ok - Los 3 criterios de aceptación se verificaron y cumplen: (1) sistema de notificaciones push con WebSocket completo (NotificationManager, WS server, endpoints REST, cliente WS con fallback SSE y backoff exponencial, Notification Center UI con badge y historial); (2) 17/17 tests unitarios pasan correctamente; (3) código documentado con JSDoc y comentarios de sección

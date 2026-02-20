@@ -1,11 +1,13 @@
 /**
- * server.js - API REST + servidor de archivos estáticos para el Kanban UI
+ * server.js - API REST + WebSocket + servidor de archivos estáticos para el Kanban UI
  */
 
+const http = require('http');
 const express = require('express');
 const path = require('path');
 const fs = require('fs');
 const chokidar = require('chokidar');
+const { WebSocketServer } = require('ws');
 const {
   getTasksCached,
   getTaskByIdCached,
@@ -20,6 +22,7 @@ const { generateBranchName, writeTask, KANBAN_PATH, getKanbanPath, COLUMNS } = r
 const cache = require('../core/cache');
 const { getHistory } = require('../core/history');
 const GitService = require('../git/gitService');
+const { NotificationManager, NOTIFICATION_TYPES } = require('../core/notifications');
 
 const app = express();
 
@@ -110,7 +113,12 @@ function ensureKanbanDirs(kanbanPath) {
 }
 
 // ─────────────────────────────────────────────
-// SSE - Server-Sent Events para sync en tiempo real
+// NOTIFICATION MANAGER
+// ─────────────────────────────────────────────
+const notifications = new NotificationManager();
+
+// ─────────────────────────────────────────────
+// SSE - Server-Sent Events (fallback para clientes sin WebSocket)
 // ─────────────────────────────────────────────
 const sseClients = new Set();
 
@@ -131,9 +139,12 @@ app.get('/api/events', (req, res) => {
 
 function broadcastChange(type = 'update', extra = {}) {
   const data = JSON.stringify({ type, timestamp: Date.now(), ...extra });
+  // SSE fallback
   for (const client of sseClients) {
     client.write(`data: ${data}\n\n`);
   }
+  // WebSocket broadcast
+  notifications.broadcastChange(type, extra);
 }
 
 // Watcher — vigila el kanban de todos los proyectos registrados
@@ -220,6 +231,13 @@ app.post('/api/tasks', async (req, res) => {
 
     await invalidateTaskCache(id, [column], kanbanPath);
     broadcastChange('created');
+    notifications.create({
+      type: NOTIFICATION_TYPES.TASK_CREATED,
+      title: 'Tarea creada',
+      message: `#${id} ${title}`,
+      priority: priority === 'alta' ? 'high' : 'normal',
+      meta: { taskId: id },
+    });
     res.status(201).json({ success: true, data: task });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -240,6 +258,12 @@ app.put('/api/tasks/:id/move', async (req, res) => {
     const result = moveTask(req.params.id, column, kanbanPath);
     await invalidateTaskCache(req.params.id, [result.fromColumn, result.toColumn], kanbanPath);
     broadcastChange('moved');
+    notifications.create({
+      type: NOTIFICATION_TYPES.TASK_MOVED,
+      title: 'Tarea movida',
+      message: `#${req.params.id} ${result.fromColumn} -> ${result.toColumn}`,
+      meta: { taskId: req.params.id, from: result.fromColumn, to: result.toColumn },
+    });
     res.json({ success: true, data: result });
   } catch (err) {
     res.status(400).json({ success: false, error: err.message });
@@ -262,6 +286,12 @@ app.put('/api/tasks/:id', async (req, res) => {
 
     await invalidateTaskCache(req.params.id, [found.column], kanbanPath);
     broadcastChange('updated');
+    notifications.create({
+      type: NOTIFICATION_TYPES.TASK_UPDATED,
+      title: 'Tarea actualizada',
+      message: `#${req.params.id} ${updatedTask.title || ''}`,
+      meta: { taskId: req.params.id },
+    });
 
     res.json({ success: true, data: updatedTask });
   } catch (err) {
@@ -281,6 +311,12 @@ app.delete('/api/tasks/:id', async (req, res) => {
     deleteTask(req.params.id, kanbanPath);
     await invalidateTaskCache(req.params.id, [column], kanbanPath);
     broadcastChange('deleted');
+    notifications.create({
+      type: NOTIFICATION_TYPES.TASK_DELETED,
+      title: 'Tarea eliminada',
+      message: `#${req.params.id}`,
+      meta: { taskId: req.params.id },
+    });
     res.json({ success: true });
   } catch (err) {
     res.status(400).json({ success: false, error: err.message });
@@ -693,9 +729,23 @@ function startTaskPolling(taskId, engine) {
 
         if (inDone) {
           broadcastChange('task:completed', { taskId, status: 'done' });
+          notifications.create({
+            type: NOTIFICATION_TYPES.TASK_COMPLETED,
+            title: 'Tarea completada',
+            message: `#${taskId} terminada exitosamente`,
+            priority: 'high',
+            meta: { taskId, status: 'done' },
+          });
           spawn('notify-send', ['AI-Kanban', `Tarea #${taskId} completada`], { stdio: 'ignore' });
         } else if (inReview) {
           broadcastChange('task:completed', { taskId, status: 'review' });
+          notifications.create({
+            type: NOTIFICATION_TYPES.TASK_COMPLETED,
+            title: 'Tarea en review',
+            message: `#${taskId} enviada a review`,
+            priority: 'high',
+            meta: { taskId, status: 'review' },
+          });
           spawn('notify-send', ['AI-Kanban', `Tarea #${taskId} enviada a review`], { stdio: 'ignore' });
         }
 
@@ -891,11 +941,66 @@ app.get('/api/health', (req, res) => {
 });
 
 // ─────────────────────────────────────────────
-// INICIAR SERVIDOR
+// API ENDPOINTS — NOTIFICACIONES
 // ─────────────────────────────────────────────
+
+/**
+ * GET /api/notifications - Obtener notificaciones
+ */
+app.get('/api/notifications', (req, res) => {
+  const limit = parseInt(req.query.limit) || 50;
+  const unreadOnly = req.query.unread === 'true';
+  const items = notifications.getAll({ limit, unreadOnly });
+  const unreadCount = notifications.getUnreadCount();
+  res.json({ success: true, data: items, unreadCount });
+});
+
+/**
+ * PUT /api/notifications/read - Marcar notificaciones como leídas
+ */
+app.put('/api/notifications/read', (req, res) => {
+  const { id } = req.body;
+  if (id) {
+    const notif = notifications.markRead(id);
+    if (!notif) {
+      return res.status(404).json({ success: false, error: 'Notificación no encontrada' });
+    }
+    res.json({ success: true, data: notif });
+  } else {
+    const count = notifications.markAllRead();
+    res.json({ success: true, markedRead: count });
+  }
+});
+
+// ─────────────────────────────────────────────
+// INICIAR SERVIDOR con WebSocket
+// ─────────────────────────────────────────────
+const server = http.createServer(app);
+
+const wss = new WebSocketServer({ server, path: '/ws' });
+
+wss.on('connection', (ws) => {
+  notifications.addClient(ws);
+
+  // Enviar estado inicial
+  ws.send(JSON.stringify({
+    event: 'connected',
+    data: { unreadCount: notifications.getUnreadCount() },
+  }));
+
+  ws.on('close', () => {
+    notifications.removeClient(ws);
+  });
+
+  ws.on('error', () => {
+    notifications.removeClient(ws);
+  });
+});
+
 cache.connect().then(() => {
-  app.listen(PORT, () => {
+  server.listen(PORT, () => {
     console.log(`\n🖥  AI-Kanban UI corriendo en: http://localhost:${PORT}`);
+    console.log(`🔌 WebSocket activo en: ws://localhost:${PORT}/ws`);
     console.log(`📁 Kanban path: ${getActiveKanbanPath()}`);
     const cacheStatus = cache.getStatus();
     console.log(`🗄  Cache Redis: ${cacheStatus.connected ? `conectado (${cacheStatus.url})` : 'no disponible (modo sin caché)'}\n`);

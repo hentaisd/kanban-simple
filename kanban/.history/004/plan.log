@@ -1,0 +1,124 @@
+Now I have a thorough understanding of the codebase. Here's my analysis:
+
+---
+
+## Análisis del Estado Actual
+
+**Comunicación en tiempo real existente:**
+- **SSE** (`/api/events`) en `server.js:117-130` — transporta eventos unidireccionales (server→client)
+- `broadcastChange()` en `server.js:132-137` — envía a todos los clientes SSE
+- **Browser Notification API** en `app.js:233-282` — notificaciones OS nativas
+- **Toast system** en `app.js:1194-1208` — notificaciones transitorias en la UI
+- **Chokidar watcher** en `server.js:151-160` — detecta cambios en archivos kanban
+
+**Eventos SSE que ya se emiten:**
+- `update`, `created`, `moved`, `updated`, `deleted` (tareas)
+- `projects:updated`, `project:changed` (proyectos)
+- `loop:started`, `loop:stopped`, `loop:log` (motor IA)
+- `task:completed`, `task:review` (completar tareas)
+- `engine:changed` (cambio de motor)
+
+**Problema con SSE actual:**
+- Unidireccional (server→client solamente)
+- No hay sistema de notificaciones persistente/historial
+- Reconexión básica con delay fijo de 5s
+- No hay confirmación de recepción de mensajes
+
+---
+
+## Plan de Implementación
+
+### Arquitectura
+
+```
+                  ┌─────────────────────┐
+                  │  NotificationManager │  (src/core/notifications.js)
+                  │  - store history     │
+                  │  - tipos/prioridad   │
+                  │  - broadcast()       │
+                  └────────┬────────────┘
+                           │
+              ┌────────────┼───────────────┐
+              ▼                            ▼
+     ┌────────────────┐          ┌────────────────┐
+     │  WebSocket (ws) │          │  SSE (fallback) │
+     │  bidireccional  │          │  legacy compat  │
+     └────────────────┘          └────────────────┘
+              │                            │
+              └────────────┬───────────────┘
+                           ▼
+                  ┌────────────────────┐
+                  │  Frontend Client    │
+                  │  - NotifCenter UI   │
+                  │  - WS con fallback  │
+                  │  - Badge + sonido   │
+                  └────────────────────┘
+```
+
+### Archivos a crear:
+
+1. **`src/core/notifications.js`** — Notification Manager (server-side)
+   - Clase `NotificationManager` con:
+     - `notifications[]` — historial en memoria (últimas 100)
+     - `addNotification(type, title, body, meta)` — crea y emite
+     - `getNotifications(limit)` — consultar historial
+     - `markAsRead(id)` / `markAllRead()`
+     - `broadcast(event, data)` — envía por WS + SSE
+   - Tipos: `task:created`, `task:moved`, `task:completed`, `task:deleted`, `loop:started`, `loop:stopped`, `loop:error`, `system:info`
+   - Prioridades: `info`, `success`, `warning`, `error`
+
+### Archivos a modificar:
+
+2. **`package.json`** — Agregar dependencia `ws`
+
+3. **`src/ui/server.js`** — Cambios:
+   - Importar `ws` y crear `WebSocketServer` sobre el mismo `http.Server`
+   - Crear instancia de `NotificationManager` pasándole los clientes WS + SSE
+   - Reemplazar `broadcastChange()` por `notifications.broadcast()`
+   - Agregar endpoints REST:
+     - `GET /api/notifications` — historial de notificaciones
+     - `PUT /api/notifications/read` — marcar como leídas
+   - Manejar mensajes WS entrantes (ping/pong, mark-read desde cliente)
+   - Mantener SSE como fallback (no romper compatibilidad)
+
+4. **`src/ui/public/app.js`** — Cambios:
+   - Nuevo `setupWebSocket()` que reemplaza `setupSSE()` como transporte primario
+   - Fallback automático a SSE si WS falla
+   - Sistema de reconexión con backoff exponencial
+   - **Notification Center**:
+     - `loadNotifications()` — carga historial
+     - `addNotification(notif)` — agrega al centro
+     - `toggleNotificationCenter()` — abrir/cerrar panel
+     - `markAllRead()` — marcar todas como leídas
+     - Badge con contador de no-leídas en el header
+   - Integrar con toasts existentes (las notificaciones nuevas también muestran toast)
+
+5. **`src/ui/public/index.html`** — Cambios:
+   - Agregar panel del notification center (dropdown desde el bell icon)
+   - Reemplazar el botón de notificaciones simple por el centro de notificaciones
+
+6. **`src/ui/public/style.css`** — Agregar estilos:
+   - `.notification-center` — panel dropdown
+   - `.notification-item` — cada notificación en la lista
+   - `.notification-badge` — contador de no-leídas
+   - `.notification-item.unread` — estilo para no-leídas
+   - Transiciones de apertura/cierre
+
+### Tests:
+
+7. **`tests/test-notifications.js`** — Tests:
+   - NotificationManager crea y almacena notificaciones
+   - Límite de historial funciona (max 100)
+   - markAsRead/markAllRead cambian estado
+   - getNotifications devuelve en orden correcto
+   - Broadcast llama a todos los clientes registrados
+
+### Dependencias:
+- Solo se necesita agregar `ws` (paquete estándar, sin sub-dependencias pesadas)
+
+### Posibles problemas:
+- El `app.listen()` actual devuelve un `http.Server` implícito — necesito capturarlo para pasarlo a `WebSocketServer`
+- Los polling intervals del loop (`startTaskPolling`, `startLoopPolling`) siguen usando `broadcastChange` — deben migrar a `notifications.broadcast()`
+- Los tests existentes no testean server.js directamente, solo loop y board
+
+PLAN: Crear `src/core/notifications.js` (NotificationManager con historial en memoria, tipos, prioridades, mark-read). Agregar `ws` a package.json. Modificar `src/ui/server.js` para crear WebSocketServer sobre el http.Server existente, instanciar NotificationManager, reemplazar `broadcastChange()` por `notifications.broadcast()`, agregar endpoints `GET /api/notifications` y `PUT /api/notifications/read`. Modificar `src/ui/public/app.js` para usar WebSocket como transporte primario con fallback a SSE, implementar Notification Center con historial, badge de no-leídas y reconexión con backoff exponencial. Modificar `src/ui/public/index.html` para agregar el panel dropdown del Notification Center junto al bell icon. Modificar `src/ui/public/style.css` con estilos del notification center. Crear `tests/test-notifications.js` con tests del NotificationManager (crear, almacenar, límite, markRead, broadcast).

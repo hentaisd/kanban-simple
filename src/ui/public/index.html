@@ -23,7 +23,23 @@
         <option value="">Sin proyecto</option>
       </select>
       <button class="btn btn-ghost btn-sm" onclick="openProjectsModal()" title="Gestionar proyectos">⚙️</button>
-      <button class="btn btn-ghost btn-sm" id="notifBtn" onclick="requestNotificationPermission()" title="Activar notificaciones">🔔</button>
+      <div class="notif-bell-wrapper" id="notifBellBtn">
+        <button class="btn btn-ghost btn-sm" onclick="toggleNotifCenter()" title="Centro de notificaciones">🔔</button>
+        <span class="notif-badge" id="notifBadge" style="display:none">0</span>
+        <!-- Notification Center Dropdown -->
+        <div class="notif-center" id="notifCenter">
+          <div class="notif-center-header">
+            <span class="notif-center-title">Notificaciones</span>
+            <div class="notif-center-actions">
+              <button class="btn btn-ghost btn-sm" onclick="markAllNotifsRead()" title="Marcar todas como leídas" style="font-size:0.65rem;padding:2px 6px">✓ Todas</button>
+              <button class="btn btn-ghost btn-sm" id="notifBtn" onclick="requestNotificationPermission()" title="Activar notificaciones OS" style="font-size:0.65rem;padding:2px 6px">OS</button>
+            </div>
+          </div>
+          <div class="notif-list" id="notifList">
+            <div class="notif-empty">Sin notificaciones</div>
+          </div>
+        </div>
+      </div>
       <button class="btn btn-ghost btn-sm" onclick="toggleMetrics()" title="Métricas">📊</button>
       <button class="btn btn-ghost btn-sm" id="logsBtn" onclick="toggleLogs()" title="Ver logs del motor IA">⌨ Logs</button>
       <div class="engine-toggle" id="engineToggle" title="Motor de IA a usar">
