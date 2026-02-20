@@ -5,7 +5,9 @@ type: feature
 priority: media
 branch: feature/sistema-de-notificaciones-push-con-websockets
 labels: []
-status: review
+status: todo
+retryCount: 1
+lastRetryAt: '2026-02-20T19:52:15.976Z'
 ---
 # Descripción
 sistema de notificaciones push con WebSockets
