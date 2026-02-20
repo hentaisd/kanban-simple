@@ -10,7 +10,8 @@ labels:
 status: in_progress
 ---
 # Descripción
-
+Bug: La función `isEmptyPlaceholder` en app.js no tenía null-check, causando error cuando el contenido estaba vacío o era null.
 
 # Criterios de aceptación
--
+- [x] Agregado null-check en `isEmptyPlaceholder` (app.js:1372)
+- [x] La función ahora retorna `true` si content es null/undefined

@@ -1,0 +1,6 @@
+TESTS: ok - Verificación de Tarea #008 completada:
+- Tests existentes: 12/12 pasaron (slugify)
+- Test nuevo para isEmptyPlaceholder: 7/7 pasaron
+- Null-check verificado en app.js:1373 y server.js:207
+- La función retorna `true` para null, undefined y string vacío
+- Criterios de aceptación cumplidos

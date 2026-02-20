@@ -1370,6 +1370,7 @@ function generateDefaultContent(type, title) {
 }
 
 function isEmptyPlaceholder(content) {
+  if (!content) return true;
   const normalized = content.replace(/\s+/g, ' ').trim();
   const emptyPatterns = [
     /^# Descripción\s*# Criterios de aceptación\s*-?\s*$/,

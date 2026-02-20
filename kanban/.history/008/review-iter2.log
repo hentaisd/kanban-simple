@@ -1,0 +1,21 @@
+**Revisión completada:**
+
+**Archivo modificado:** `src/ui/public/app.js` (línea 1373)
+
+**Cambio realizado:**
+```javascript
+function isEmptyPlaceholder(content) {
+  if (!content) return true;  // ← null-check agregado
+  const normalized = content.replace(/\s+/g, ' ').trim();
+  ...
+}
+```
+
+**Análisis:**
+- ✅ El null-check es correcto y cubre `null`, `undefined` y strings vacíos
+- ✅ No altera la lógica existente para contenido válido
+- ✅ Sigue las convenciones del proyecto (sin comentarios, estilo consistente)
+- ✅ Es minimalista y no introduce breaking changes
+- ✅ El archivo de tarea fue actualizado con descripción y criterios marcados
+
+REVIEW: aprobado - fix simple y correcto, null-check implementado correctamente en isEmptyPlaceholder
