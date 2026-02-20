@@ -11,6 +11,7 @@ const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
+const GitService = require('../src/git/gitService');
 
 const PROJECT_ROOT = path.resolve(__dirname, '..');
 const TEST_DIR = path.join(PROJECT_ROOT, '.test-git-integration');
@@ -23,9 +24,9 @@ const RESET = '\x1b[0m';
 let passed = 0;
 let failed = 0;
 
-function test(name, fn) {
+async function test(name, fn) {
   try {
-    fn();
+    await fn();
     console.log(`${GREEN}✅ ${name}${RESET}`);
     passed++;
   } catch (err) {
@@ -81,29 +82,28 @@ function cleanup() {
 // TESTS
 // ─────────────────────────────────────────────────────────────
 
-function testGitServiceInstantiation() {
+async function testGitServiceInstantiation() {
   console.log('\n📋 TEST: GitService Instantiation\n');
   
-  const GitService = require('../src/git/gitService');
   const git = new GitService(TEST_DIR);
   
-  test('GitService se instancia correctamente', () => {
+  await test('GitService se instancia correctamente', async () => {
     assert.ok(git);
     assert.strictEqual(git.repoPath, TEST_DIR);
     assert.strictEqual(git.defaultBranch, 'main');
   });
   
-  test('isGitRepo detecta repositorio válido', async () => {
+  await test('isGitRepo detecta repositorio válido', async () => {
     const result = await git.isGitRepo();
     assert.strictEqual(result, true);
   });
   
-  test('getCurrentBranch retorna la rama actual', async () => {
+  await test('getCurrentBranch retorna la rama actual', async () => {
     const branch = await git.getCurrentBranch();
     assert.strictEqual(branch, 'main');
   });
   
-  test('getDirtyCount retorna 0 para repo limpio', async () => {
+  await test('getDirtyCount retorna 0 para repo limpio', async () => {
     const count = await git.getDirtyCount();
     assert.strictEqual(count, 0);
   });
@@ -112,45 +112,44 @@ function testGitServiceInstantiation() {
 async function testGitServiceOperations() {
   console.log('\n📋 TEST: GitService Operations\n');
   
-  const GitService = require('../src/git/gitService');
   const git = new GitService(TEST_DIR);
   
-  test('checkout cambia de rama', async () => {
+  await test('checkout cambia de rama', async () => {
     await git.checkout('developer');
     const branch = await git.getCurrentBranch();
     assert.strictEqual(branch, 'developer');
   });
   
-  test('createBranch crea nueva rama', async () => {
+  await test('createBranch crea nueva rama', async () => {
     await git.createBranch('feature/test-001');
     const branch = await git.getCurrentBranch();
     assert.strictEqual(branch, 'feature/test-001');
   });
   
-  test('getDirtyCount detecta archivos nuevos', async () => {
+  await test('getDirtyCount detecta archivos nuevos', async () => {
     fs.writeFileSync(path.join(TEST_DIR, 'new-file.txt'), 'test');
     const count = await git.getDirtyCount();
     assert.ok(count > 0);
   });
   
-  test('addAll agrega archivos al staging', async () => {
+  await test('addAll agrega archivos al staging', async () => {
     await git.addAll();
     const status = await git.getStatus();
     assert.ok(status.staged.length > 0 || status.created.length > 0);
   });
   
-  test('commit crea commit correctamente', async () => {
+  await test('commit crea commit correctamente', async () => {
     const result = await git.commit('test: nuevo archivo');
     assert.ok(result);
   });
   
-  test('merge integra branch correctamente', async () => {
+  await test('merge integra branch correctamente', async () => {
     await git.checkout('developer');
     const result = await git.merge('feature/test-001');
     assert.strictEqual(result.merged, true);
   });
   
-  test('deleteBranch elimina branch', async () => {
+  await test('deleteBranch elimina branch', async () => {
     const deleted = await git.deleteBranch('feature/test-001', true);
     assert.strictEqual(deleted, true);
   });
@@ -159,29 +158,25 @@ async function testGitServiceOperations() {
 async function testGitServiceAbort() {
   console.log('\n📋 TEST: GitService Abort\n');
   
-  const GitService = require('../src/git/gitService');
   const git = new GitService(TEST_DIR);
   
   await git.checkout('main');
-  
   await git.createBranch('feature/abort-test');
   
   fs.writeFileSync(path.join(TEST_DIR, 'abort-test.txt'), 'test');
   
-  test('abort limpia cambios y vuelve a branch base', async () => {
+  await test('abort limpia cambios y vuelve a branch base', async () => {
     await git.abort('main', 'feature/abort-test');
-    
     const branch = await git.getCurrentBranch();
-    
     assert.strictEqual(branch, 'main');
   });
   
-  test('branch de tarea fue eliminado', async () => {
-    const branches = execSync('git branch', { cwd: TEST_DIR }).toString();
+  await test('branch de tarea fue eliminado', async () => {
+    const branches = await git.getLocalBranches();
     assert.ok(!branches.includes('feature/abort-test'));
   });
   
-  test('working directory está limpio', async () => {
+  await test('working directory está limpio', async () => {
     await git.hardReset();
     const dirty = await git.getDirtyCount();
     assert.strictEqual(dirty, 0);
@@ -191,10 +186,9 @@ async function testGitServiceAbort() {
 async function testGitServiceVerify() {
   console.log('\n📋 TEST: GitService Verify\n');
   
-  const GitService = require('../src/git/gitService');
   const git = new GitService(TEST_DIR);
   
-  test('verify confirma estado limpio', async () => {
+  await test('verify confirma estado limpio', async () => {
     await git.checkout('main');
     await git.hardReset();
     const result = await git.verify('main');
@@ -204,7 +198,7 @@ async function testGitServiceVerify() {
     assert.strictEqual(result.dirty, 0);
   });
   
-  test('verify detecta branch incorrecto', async () => {
+  await test('verify detecta branch incorrecto', async () => {
     await git.checkout('developer');
     const result = await git.verify('main');
     
@@ -216,19 +210,18 @@ async function testGitServiceVerify() {
 async function testGitServiceEnsureBranch() {
   console.log('\n📋 TEST: GitService EnsureBranch\n');
   
-  const GitService = require('../src/git/gitService');
   const git = new GitService(TEST_DIR);
   
   await git.checkout('main');
   await git.hardReset();
   
-  test('ensureBranch retorna ok cuando está en branch correcto', async () => {
+  await test('ensureBranch retorna ok cuando está en branch correcto', async () => {
     const result = await git.ensureBranch('main');
     assert.strictEqual(result.ok, true);
     assert.strictEqual(result.restored, false);
   });
   
-  test('ensureBranch detecta branch incorrecto', async () => {
+  await test('ensureBranch detecta branch incorrecto', async () => {
     await git.checkout('developer');
     const result = await git.ensureBranch('main');
     

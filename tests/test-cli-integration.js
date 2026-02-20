@@ -13,10 +13,12 @@ const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
+const board = require('../src/kanban/board');
 
 const PROJECT_ROOT = path.resolve(__dirname, '..');
 const TEST_DIR = path.join(PROJECT_ROOT, '.test-cli-integration');
 const CLI_PATH = path.join(PROJECT_ROOT, 'src/cli/index.js');
+const PACKAGE_JSON = require('../package.json');
 
 const GREEN = '\x1b[32m';
 const RED = '\x1b[31m';
@@ -111,14 +113,12 @@ function testCLIHelp() {
   
   test('--version muestra versión', () => {
     const result = runCLI('--version');
-    assert.ok(result.stdout.includes('1.0.0'));
+    assert.ok(result.stdout.includes(PACKAGE_JSON.version));
   });
 }
 
 function testCreateCommand() {
   console.log('\n📋 TEST: Create Command\n');
-  
-  const board = require('../src/kanban/board');
   
   test('crear tarea con título', () => {
     const taskContent = `---
@@ -181,8 +181,6 @@ status: backlog
 function testListCommand() {
   console.log('\n📋 TEST: List Command\n');
   
-  const board = require('../src/kanban/board');
-  
   test('listar todas las tareas', () => {
     const allTasksByColumn = board.getTasks(null, TEST_DIR);
     const totalCount = Object.values(allTasksByColumn).flat().length;
@@ -205,8 +203,6 @@ function testListCommand() {
 
 function testMoveCommand() {
   console.log('\n📋 TEST: Move Command\n');
-  
-  const board = require('../src/kanban/board');
   
   test('mover tarea de backlog a todo', () => {
     board.moveTask('001', 'todo', TEST_DIR);
@@ -242,8 +238,6 @@ function testMoveCommand() {
 function testShowCommand() {
   console.log('\n📋 TEST: Show Command\n');
   
-  const board = require('../src/kanban/board');
-  
   test('obtener tarea por ID', () => {
     const result = board.getTaskById('002', TEST_DIR);
     
@@ -260,8 +254,6 @@ function testShowCommand() {
 
 function testDeleteCommand() {
   console.log('\n📋 TEST: Delete Command\n');
-  
-  const board = require('../src/kanban/board');
   
   test('eliminar tarea existente', () => {
     board.deleteTask('003', TEST_DIR);
@@ -282,8 +274,6 @@ function testDeleteCommand() {
 
 function testTaskMetadata() {
   console.log('\n📋 TEST: Task Metadata\n');
-  
-  const board = require('../src/kanban/board');
   
   test('tarea con labels', () => {
     const taskContent = `---

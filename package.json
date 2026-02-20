@@ -11,7 +11,8 @@
     "dev": "node src/ui/server.js",
     "board": "node src/cli/index.js board",
     "cli": "node src/cli/index.js",
-    "test": "node src/utils.test.js"
+    "test": "node src/utils.test.js",
+    "test:integration": "node tests/test-cli-integration.js && node tests/test-git-integration.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",

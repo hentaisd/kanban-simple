@@ -52,6 +52,11 @@ class GitService {
            s.staged.length + s.not_added.length + s.renamed.length;
   }
 
+  async getLocalBranches() {
+    const result = await this.git.branchLocal();
+    return result.all;
+  }
+
   // ── STASH ─────────────────────────────────────────────────
 
   async stashIfNeeded() {

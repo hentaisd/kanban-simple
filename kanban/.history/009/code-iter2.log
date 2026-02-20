@@ -1,0 +1,5 @@
+Voy a revisar los archivos existentes para corregir los problemas indicados.
+Voy a corregir los 4 problemas indicados:
+Necesito agregar un método `getLocalBranches()` a GitService para usar consistentemente en el test:
+Ahora corriego test-cli-integration.js para eliminar los requires repetidos y usar la versión dinámica:
+RESULTADO: completado - Corregidos los 4 problemas: (1) requires movidos al inicio de ambos archivos, (2) versión leída dinámicamente desde package.json, (3) script test:integration agregado, (4) línea 177 usa GitService.getLocalBranches(). Todos los tests pasan: 17 CLI + 18 Git = 35 tests exitosos.
