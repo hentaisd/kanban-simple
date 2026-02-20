@@ -1,9 +1,3 @@
-La información de la tarea está incompleta:
-- Descripción vacía
-- Criterios de aceptación vacíos
-- El plan dice "Modificar 2 archivos" pero no especifica cuáles ni qué cambios
-
-Necesito ver el plan completo. Déjame buscar más detalles:
-Ahora tengo el plan completo. Voy a leer los archivos a modificar:
-Implementando los cambios:
-RESULTADO: completado - Añadidas funciones `generateDefaultContent()` e `isEmptyPlaceholder()` en app.js y server.js. Ahora las tareas creadas desde UI con contenido placeholder vacío generan criterios automáticos según el tipo (feature/bug/refactor), igual que el CLI.
+Voy a implementar el plan. Primero leo el archivo actual y verifico las carpetas.
+Ahora muevo el archivo a done y actualizo el status:
+RESULTADO: completado - Moví el archivo 008 de todo/ a done/ y actualicé el status a done

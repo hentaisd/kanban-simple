@@ -1,0 +1,17 @@
+**Resultados de verificación:**
+
+✅ **Tests ejecutados:**
+- `npm test` (src/utils.test.js): 12/12 pasaron
+- `tests/test-isEmptyPlaceholder.js`: 7/7 pasaron
+
+✅ **Implementación verificada** (app.js:1381-1382):
+```javascript
+function isEmptyPlaceholder(content) {
+  if (!content) return true;  // ← null-check implementado
+```
+
+✅ **Criterios de aceptación cumplidos:**
+- Null-check retorna `true` para `null`, `undefined`, y `''`
+- Contenido válido retorna `false` correctamente
+
+TESTS: ok - 19/19 tests pasaron; null-check en isEmptyPlaceholder verificado y funcionando correctamente

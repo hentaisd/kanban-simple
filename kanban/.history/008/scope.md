@@ -1,12 +1,12 @@
 # Scope — Tarea #008: Tarea creada desde UI test
 
 **Veredicto:** OK
-**Detalle:** Null-check en isEmptyPlaceholder (app.js:1373) verificado y funcionando; criterios de aceptación cumplidos
+**Detalle:** null-check verificado en isEmptyPlaceholder (app.js:1382), función maneja null/undefined correctamente, tarea completada
 
 **Métricas:**
-- Duración: 84s
+- Duración: 51s
 - ExitCode: 0
-- Output: 531 chars
+- Output: 560 chars
 
 ---
-_Generado: 2026-02-20T20:47:54.562Z_
+_Generado: 2026-02-20T20:51:10.094Z_

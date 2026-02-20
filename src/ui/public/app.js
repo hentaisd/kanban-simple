@@ -885,6 +885,12 @@ function createCardEl(task) {
     ? `<div class="card-criteria">${criteriaDone}/${criteriaTotal} criterios</div>`
     : '';
 
+  // Botón Start solo si no está en done ni in_progress
+  const canStart = task.column !== 'done' && task.column !== 'in_progress' && !blocked;
+  const startBtn = canStart 
+    ? `<button class="card-start-btn" onclick="event.stopPropagation(); startTask('${task.id}', '${task.column}')" title="Iniciar tarea">▶ Start</button>`
+    : '';
+
   card.innerHTML = `
     <div class="card-header">
       <span class="card-id">#${idStr}</span>
@@ -902,7 +908,10 @@ function createCardEl(task) {
     ${labels ? `<div class="card-labels">${labels}</div>` : ''}
     <div class="card-footer">
       <span class="card-branch" title="${escapeHtml(task.branch || '')}">${escapeHtml(task.branch || '')}</span>
-      <button class="card-menu-btn" onclick="openDetailModal(event, '${task.id}')" title="Ver detalle">⋯</button>
+      <div class="card-actions">
+        ${startBtn}
+        <button class="card-menu-btn" onclick="openDetailModal(event, '${task.id}')" title="Ver detalle">⋯</button>
+      </div>
     </div>
   `;
 

@@ -7,7 +7,7 @@ branch: bug/tarea-creada-desde-ui-test
 labels:
   - uitest
   - automated
-status: in_progress
+status: done
 ---
 # Descripción
 Bug: La función `isEmptyPlaceholder` en app.js no tenía null-check, causando error cuando el contenido estaba vacío o era null.
