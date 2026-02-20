@@ -834,20 +834,138 @@ function openDetailModal(e, taskId) {
 // TABS EN MODAL DETALLE
 // ─────────────────────────────────────────────
 function switchTab(tab, btn) {
-  // Actualizar botones
   document.querySelectorAll('.task-tab').forEach(b => b.classList.remove('active'));
   if (btn) btn.classList.add('active');
 
-  // Mostrar panel correcto
   document.getElementById('detailBody').style.display = tab === 'detail' ? 'block' : 'none';
+  document.getElementById('phasesBody').style.display = tab === 'phases' ? 'block' : 'none';
   document.getElementById('historyBody').style.display = tab === 'history' ? 'block' : 'none';
   document.getElementById('diffBody').style.display = tab === 'diff' ? 'block' : 'none';
 
+  if (tab === 'phases' && currentDetailTaskId) {
+    loadPhasesTab(currentDetailTaskId);
+  }
   if (tab === 'history' && currentDetailTaskId) {
     loadHistoryTab(currentDetailTaskId);
   }
   if (tab === 'diff' && currentDetailTaskId) {
     loadDiffTab(currentDetailTaskId);
+  }
+}
+
+async function loadPhasesTab(taskId) {
+  const el = document.getElementById('phasesBody');
+  el.innerHTML = '<div style="color:var(--text-muted);padding:16px">Cargando fases...</div>';
+
+  try {
+    const [artifactsRes, historyRes] = await Promise.all([
+      fetch(`/api/tasks/${taskId}/artifacts`),
+      fetch(`/api/tasks/${taskId}/history`)
+    ]);
+    
+    const { success: artifactsOk, data: artifacts } = await artifactsRes.json();
+    const { success: historyOk, data: history } = await historyRes.json();
+    
+    if (!artifactsOk) throw new Error('Error cargando artefactos');
+    
+    if (!artifacts || artifacts.length === 0) {
+      el.innerHTML = '<div class="history-empty">Sin artefactos de fases. Ejecuta la tarea con el motor IA.</div>';
+      return;
+    }
+
+    const lastRun = history && history.length > 0 ? history[history.length - 1] : null;
+    const phasesInfo = lastRun?.phases || {};
+
+    const phaseOrder = ['plan', 'code-iter1', 'code-iter2', 'code-iter3', 'review-iter1', 'review-iter2', 'review-iter3', 'test-iter1', 'test-iter2', 'test-iter3', 'scope'];
+    
+    const sortedArtifacts = artifacts.sort((a, b) => {
+      const aIdx = phaseOrder.findIndex(p => a.name.startsWith(p));
+      const bIdx = phaseOrder.findIndex(p => b.name.startsWith(p));
+      return (aIdx === -1 ? 999 : aIdx) - (bIdx === -1 ? 999 : bIdx);
+    });
+
+    el.innerHTML = `<div class="phases-list">
+      ${sortedArtifacts.map(a => {
+        const phaseLabel = a.name.replace('-iter', ' (iter ').replace('iter', 'iter ') + (a.name.includes('iter') ? ')' : '');
+        const phaseIcon = a.name.startsWith('plan') ? '📋' 
+          : a.name.startsWith('code') ? '💻'
+          : a.name.startsWith('review') ? '🔍'
+          : a.name.startsWith('test') ? '🧪'
+          : a.name.startsWith('scope') ? '✅' : '📄';
+        const logBadge = a.hasLog ? `<span class="phase-log-badge" title="Output disponible (${(a.logSize/1024).toFixed(1)}KB)">📜</span>` : '';
+        return `
+          <div class="phase-item" onclick="loadPhaseArtifact('${taskId}', '${a.name}')">
+            <span class="phase-icon">${phaseIcon}</span>
+            <span class="phase-name">${phaseLabel.toUpperCase()}</span>
+            ${logBadge}
+            <span class="phase-time">${new Date(a.mtime).toLocaleTimeString()}</span>
+          </div>
+        `;
+      }).join('')}
+    </div>
+    <div id="phaseArtifactContent" style="margin-top:16px"></div>
+    `;
+  } catch (err) {
+    el.innerHTML = '<div class="history-empty">Error cargando fases.</div>';
+  }
+}
+
+async function loadPhaseArtifact(taskId, phaseName) {
+  const el = document.getElementById('phaseArtifactContent');
+  el.innerHTML = '<div style="color:var(--text-muted);padding:8px">Cargando...</div>';
+  
+  try {
+    const res = await fetch(`/api/tasks/${taskId}/artifacts/${phaseName}`);
+    if (!res.ok) throw new Error('No encontrado');
+    const content = await res.text();
+    
+    // Verificar si tiene log disponible
+    const artifactsRes = await fetch(`/api/tasks/${taskId}/artifacts`);
+    const { data: artifacts } = await artifactsRes.json();
+    const artifact = artifacts.find(a => a.name === phaseName);
+    const hasLog = artifact?.hasLog;
+    const logSize = artifact?.logSize || 0;
+    
+    const logButton = hasLog 
+      ? `<button class="btn btn-secondary btn-sm" onclick="loadPhaseLog('${taskId}', '${phaseName}')" title="Ver output completo (${(logSize/1024).toFixed(1)}KB)">📜 Ver output completo</button>`
+      : '';
+    
+    el.innerHTML = `
+      <div class="phase-artifact">
+        <div class="phase-artifact-header">
+          <strong>${phaseName.toUpperCase()}</strong>
+          ${logButton}
+        </div>
+        <pre class="phase-artifact-content">${escapeHtml(content)}</pre>
+      </div>
+    `;
+  } catch (err) {
+    el.innerHTML = '<div style="color:var(--text-muted);padding:8px">Error cargando artefacto</div>';
+  }
+}
+
+async function loadPhaseLog(taskId, phaseName) {
+  const el = document.getElementById('phaseArtifactContent');
+  el.innerHTML = '<div style="color:var(--text-muted);padding:8px">Cargando output completo...</div>';
+  
+  try {
+    const res = await fetch(`/api/tasks/${taskId}/artifacts/${phaseName}?type=log`);
+    if (!res.ok) throw new Error('No encontrado');
+    const content = await res.text();
+    const lines = content.split('\n').length;
+    
+    el.innerHTML = `
+      <div class="phase-artifact">
+        <div class="phase-artifact-header">
+          <strong>${phaseName.toUpperCase()} - Output Completo</strong>
+          <button class="btn btn-secondary btn-sm" onclick="loadPhaseArtifact('${taskId}', '${phaseName}')">📋 Ver resumen</button>
+        </div>
+        <div class="phase-log-info">${lines.toLocaleString()} líneas | ${(content.length/1024).toFixed(1)} KB</div>
+        <pre class="phase-log-content">${escapeHtml(content)}</pre>
+      </div>
+    `;
+  } catch (err) {
+    el.innerHTML = '<div style="color:var(--text-muted);padding:8px">Error cargando output: ' + err.message + '</div>';
   }
 }
 
@@ -880,6 +998,7 @@ function renderHistoryEntry(entry) {
   const codeEntries = entry.phases?.code || [];
   const reviewEntries = entry.phases?.review || [];
   const testEntries = entry.phases?.test || [];
+  const scopeStatus = entry.phases?.scope?.status || 'pending';
 
   const lastCode = codeEntries[codeEntries.length - 1];
   const lastReview = reviewEntries[reviewEntries.length - 1];
@@ -889,23 +1008,31 @@ function renderHistoryEntry(entry) {
     const cls = status === 'ok' || status === 'approved' ? 'phase-ok'
       : status === 'failed' ? 'phase-failed'
       : status === 'rejected' ? 'phase-rejected'
+      : status === 'lost' ? 'phase-lost'
+      : status === 'unknown' ? 'phase-unknown'
       : 'phase-pending';
-    return `<span class="history-phase-badge ${cls}">${label}</span>`;
+    const icon = status === 'lost' ? '❓' : status === 'unknown' ? '❔' : '';
+    return `<span class="history-phase-badge ${cls}">${icon}${label}</span>`;
   };
 
   const durationMin = entry.totalDuration ? Math.round(entry.totalDuration / 6000) / 10 : null;
+
+  const isRecovered = planStatus === 'ok' && entry.phases?.plan?.summary?.includes('Reconstruido');
+  const recoveredBadge = isRecovered ? '<span class="history-recovered-badge">🔄 Recuperado</span>' : '';
 
   return `
     <div class="history-entry">
       <div class="history-entry-header">
         <span class="history-entry-time">${time}</span>
         <span class="history-entry-result ${resultClass}">${resultLabel}</span>
+        ${recoveredBadge}
       </div>
       <div class="history-phases">
         ${phaseBadge('PLAN', planStatus)}
         ${lastCode ? phaseBadge(`CODE×${codeEntries.length}`, lastCode.status) : ''}
         ${lastReview ? phaseBadge('REVIEW', lastReview.status) : ''}
         ${lastTest ? phaseBadge('TEST', lastTest.status) : ''}
+        ${phaseBadge('SCOPE', scopeStatus)}
       </div>
       <div class="history-meta">
         ${entry.iterations ? `<span>🔄 ${entry.iterations} iter.</span>` : ''}

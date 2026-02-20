@@ -58,5 +58,9 @@ module.exports = {
   loop: {
     waitSeconds: 30,
     maxTasksPerRun: 0,
+    // Reintento automático de tareas fallidas
+    autoRetry: true,           // Habilitar reintento automático
+    maxRetries: 3,             // Máximo de reintentos antes de dejar en review
+    retryDelayMinutes: 5,      // Minutos entre reintentos
   },
 };

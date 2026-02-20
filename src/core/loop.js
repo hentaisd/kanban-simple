@@ -116,8 +116,11 @@ function loadConfig(overrides = {}) {
       autoMerge:     cfg.git?.autoMerge     ?? true,
     },
     loop: {
-      waitSeconds:    cfg.loop?.waitSeconds    ?? 30,
-      maxTasksPerRun: cfg.loop?.maxTasksPerRun ?? 0,
+      waitSeconds:      cfg.loop?.waitSeconds      ?? 30,
+      maxTasksPerRun:   cfg.loop?.maxTasksPerRun   ?? 0,
+      autoRetry:        cfg.loop?.autoRetry        ?? true,
+      maxRetries:       cfg.loop?.maxRetries       ?? 3,
+      retryDelayMinutes: cfg.loop?.retryDelayMinutes ?? 5,
     },
   };
 }
@@ -209,6 +212,49 @@ function checkDependencies(task, kanbanPath) {
   return { ok: blocking.length === 0, blocking };
 }
 
+/**
+ * Detecta dependencias circulares en una tarea.
+ * Retorna { circular: boolean, path: string[] }
+ */
+function detectCircularDependency(task, kanbanPath, visited = new Set(), path = []) {
+  const taskId = String(task.id).padStart(3, '0');
+  
+  if (visited.has(taskId)) {
+    return { circular: true, path: [...path, taskId] };
+  }
+  
+  const deps = Array.isArray(task.dependsOn) ? task.dependsOn : [];
+  if (deps.length === 0) {
+    return { circular: false, path: [] };
+  }
+  
+  visited.add(taskId);
+  path.push(taskId);
+  
+  for (const depId of deps) {
+    const paddedDep = String(depId).padStart(3, '0');
+    
+    // Buscar la tarea dependencia en todas las columnas
+    const columns = ['todo', 'in_progress', 'review', 'backlog', 'done'];
+    let depTask = null;
+    
+    for (const col of columns) {
+      const tasks = getTasks(col, kanbanPath);
+      depTask = tasks.find(t => String(t.id).padStart(3, '0') === paddedDep);
+      if (depTask) break;
+    }
+    
+    if (depTask) {
+      const result = detectCircularDependency(depTask, kanbanPath, new Set(visited), [...path]);
+      if (result.circular) {
+        return result;
+      }
+    }
+  }
+  
+  return { circular: false, path: [] };
+}
+
 // ─────────────────────────────────────────────
 // ACTUALIZAR FRONTMATTER DE TAREA
 // ─────────────────────────────────────────────
@@ -222,6 +268,49 @@ function updateTaskFields(taskId, fields, kanbanPath) {
   } catch (err) {
     console.log(chalk.yellow(`  ⚠ No se pudo actualizar campos de tarea ${taskId}: ${err.message}`));
   }
+}
+
+// ─────────────────────────────────────────────
+// REINTENTO AUTOMÁTICO DE TAREAS FALLIDAS
+// ─────────────────────────────────────────────
+
+function checkRetryableTasks(kanbanPath, loopConfig) {
+  if (!loopConfig.autoRetry) return [];
+  
+  const reviewTasks = getTasks('review', kanbanPath);
+  const now = Date.now();
+  const retryDelayMs = (loopConfig.retryDelayMinutes || 5) * 60 * 1000;
+  const maxRetries = loopConfig.maxRetries || 3;
+  
+  const retryable = [];
+  
+  for (const task of reviewTasks) {
+    const retryCount = task.retryCount || 0;
+    const lastAttempt = task.lastAttemptAt ? new Date(task.lastAttemptAt).getTime() : 0;
+    const timeSinceLastAttempt = now - lastAttempt;
+    
+    if (retryCount < maxRetries && timeSinceLastAttempt >= retryDelayMs) {
+      retryable.push({
+        task,
+        retryCount,
+        timeSinceLastAttempt: Math.round(timeSinceLastAttempt / 60000),
+      });
+    }
+  }
+  
+  return retryable;
+}
+
+function moveTaskToRetry(task, kanbanPath) {
+  const retryCount = (task.retryCount || 0) + 1;
+  
+  moveTask(task.id, 'todo', kanbanPath);
+  updateTaskFields(task.id, {
+    retryCount,
+    lastRetryAt: new Date().toISOString(),
+  }, kanbanPath);
+  
+  return retryCount;
 }
 
 // ─────────────────────────────────────────────
@@ -410,6 +499,7 @@ async function processTask(task, config) {
     updateTaskFields(task.id, {
       completedAt: now,
       iterations: taskResult.iterations || 1,
+      retryCount: 0,  // Resetear contador de reintentos
     }, kanbanPath);
     console.log(chalk.green(`\n  [5/6] DONE — ${taskResult.summary} (${elapsed}s)`));
     if (taskResult.iterations > 1) {
@@ -420,14 +510,21 @@ async function processTask(task, config) {
     updateTaskFields(task.id, {
       completedAt: now,
       iterations: taskResult.iterations || 1,
+      lastAttemptAt: now,  // Guardar último intento para retry
     }, kanbanPath);
     console.log(chalk.yellow(`\n  [5/6] SCOPE INCOMPLETO → REVIEW (${elapsed}s)`));
     console.log(chalk.yellow(`         ${taskResult.scopeNote}`));
   } else {
+    const currentRetryCount = (task.retryCount || 0) + 1;
     moveTask(task.id, 'review', kanbanPath);
-    updateTaskFields(task.id, { completedAt: now }, kanbanPath);
+    updateTaskFields(task.id, { 
+      completedAt: now,
+      lastAttemptAt: now,  // Guardar último intento para retry
+      retryCount: currentRetryCount,
+    }, kanbanPath);
     console.log(chalk.yellow(`\n  [5/6] FALLIDA → REVIEW (${elapsed}s)`));
     console.log(chalk.yellow(`         Razón: ${taskResult?.reason ?? 'Error desconocido'}`));
+    console.log(chalk.yellow(`         Reintento: ${currentRetryCount}/${config.loop?.maxRetries || 3}`));
   }
 
   // ── PASO 6: guardar historial ────────────────────────────
@@ -532,7 +629,29 @@ async function startLoop(cliOverrides = {}) {
       }
     }
 
+    // ── AUTO-RETRY: mover tareas fallidas de review a todo ──
+    const retryable = checkRetryableTasks(loopKanbanPath, config.loop);
+    if (retryable.length > 0) {
+      console.log(chalk.cyan(`  │ 🔄 ${retryable.length} tarea(s) para reintentar`));
+      for (const { task, retryCount, timeSinceLastAttempt } of retryable) {
+        const newRetryCount = moveTaskToRetry(task, loopKanbanPath);
+        console.log(chalk.yellow(`  │   → [${task.id}] ${task.title} (intento ${newRetryCount}/${config.loop.maxRetries}, hace ${timeSinceLastAttempt}min)`));
+      }
+    }
+
     const todoTasks = getTasks('todo', loopKanbanPath);
+    
+    // ── VALIDACIÓN: Solo UNA tarea a la vez ──
+    const inProgressTasks = getTasks('in_progress', loopKanbanPath);
+    if (inProgressTasks.length > 0) {
+      console.log(chalk.yellow(`  │ ⚠️ ${inProgressTasks.length} tarea(s) en IN_PROGRESS`));
+      console.log(chalk.yellow(`  │    → [${inProgressTasks[0].id}] ${inProgressTasks[0].title}`));
+      console.log(chalk.yellow(`  │    Esperando a que termine antes de procesar otra...`));
+      console.log(chalk.gray('  └─────────────────────────────────────────'));
+      if (cliOverrides.once) break;
+      await wait(waitSeconds);
+      continue;
+    }
 
     if (todoTasks.length === 0) {
       console.log(chalk.gray('  │ Sin tareas en TODO.'));
@@ -544,9 +663,16 @@ async function startLoop(cliOverrides = {}) {
 
     console.log(chalk.gray(`  │ ${todoTasks.length} tarea(s) en TODO`));
 
-    // Buscar la primera tarea sin dependencias bloqueantes
+    // Buscar la primera tarea sin dependencias bloqueantes NI circulares
     let taskToProcess = null;
     for (const candidate of todoTasks) {
+      // Verificar dependencias circulares primero
+      const circular = detectCircularDependency(candidate, loopKanbanPath);
+      if (circular.circular) {
+        console.log(chalk.red(`  │ ⛔ [${candidate.id}] ${candidate.title} — dependencia circular: ${circular.path.join(' → ')}`));
+        continue;
+      }
+      
       const { ok, blocking } = checkDependencies(candidate, loopKanbanPath);
       if (ok) {
         taskToProcess = candidate;

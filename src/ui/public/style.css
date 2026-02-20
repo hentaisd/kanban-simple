@@ -998,6 +998,17 @@ body {
 .phase-failed { background: rgba(239,68,68,0.2); color: #f87171; }
 .phase-rejected { background: rgba(245,158,11,0.2); color: #fbbf24; }
 .phase-pending { background: rgba(100,116,139,0.2); color: #94a3b8; }
+.phase-lost { background: rgba(239,68,68,0.15); color: #fca5a5; }
+.phase-unknown { background: rgba(100,116,139,0.15); color: #94a3b8; }
+
+.history-recovered-badge {
+  background: rgba(59,130,246,0.2);
+  color: #93c5fd;
+  font-size: 0.65rem;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-weight: 600;
+}
 
 .history-summary {
   font-size: 0.75rem;
@@ -1278,3 +1289,105 @@ body {
   vertical-align: middle;
   line-height: 1.4;
 }
+
+/* ─── PHASES LIST ─── */
+.phases-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.phase-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.phase-item:hover {
+  border-color: var(--accent);
+  background: rgba(59, 130, 246, 0.08);
+}
+
+.phase-icon {
+  font-size: 1.1rem;
+}
+
+.phase-name {
+  flex: 1;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.phase-time {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  font-family: monospace;
+}
+
+.phase-artifact {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.phase-artifact-header {
+  padding: 8px 12px;
+  background: var(--bg-3);
+  border-bottom: 1px solid var(--border);
+  font-size: 0.75rem;
+  color: var(--accent);
+}
+
+.phase-artifact-content {
+  padding: 12px;
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: 0.75rem;
+  line-height: 1.6;
+  color: var(--text);
+  white-space: pre-wrap;
+  max-height: 250px;
+  overflow-y: auto;
+}
+
+.phase-artifact-content::-webkit-scrollbar { width: 4px; }
+.phase-artifact-content::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+.phase-log-badge {
+  font-size: 0.7rem;
+  background: rgba(59, 130, 246, 0.2);
+  color: #93c5fd;
+  padding: 2px 6px;
+  border-radius: 4px;
+  margin-left: 8px;
+}
+
+.phase-log-info {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  padding: 4px 12px;
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--border);
+}
+
+.phase-log-content {
+  padding: 12px;
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: 0.7rem;
+  line-height: 1.5;
+  color: var(--text);
+  white-space: pre-wrap;
+  max-height: 400px;
+  overflow-y: auto;
+  background: var(--bg);
+}
+
+.phase-log-content::-webkit-scrollbar { width: 6px; }
+.phase-log-content::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }

@@ -169,11 +169,13 @@
       <!-- TABS -->
       <div class="task-tabs">
         <button class="task-tab active" data-tab="detail" onclick="switchTab('detail', this)">📋 Detalle</button>
+        <button class="task-tab" data-tab="phases" onclick="switchTab('phases', this)">⚡ Fases</button>
         <button class="task-tab" data-tab="history" onclick="switchTab('history', this)">📜 Historial</button>
         <button class="task-tab" data-tab="diff" onclick="switchTab('diff', this)">🔀 Diff</button>
       </div>
       <div class="modal-body" id="detailBody">
       </div>
+      <div id="phasesBody" style="display:none; padding:20px 24px; max-height:400px; overflow-y:auto"></div>
       <div id="historyBody" style="display:none; padding:20px 24px; max-height:400px; overflow-y:auto"></div>
       <div id="diffBody" style="display:none; padding:20px 24px"></div>
       <div class="modal-footer">

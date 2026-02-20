@@ -29,18 +29,25 @@ function getArtifactsDir(kanbanPath, taskId) {
   return path.join(kanbanPath, '.history', padded);
 }
 
-function saveArtifact(kanbanPath, taskId, phase, content) {
+function saveArtifact(kanbanPath, taskId, phase, content, fullOutput = null) {
   if (!kanbanPath) return null;
   const dir = getArtifactsDir(kanbanPath, taskId);
   fs.mkdirSync(dir, { recursive: true });
+  
   const file = path.join(dir, `${phase}.md`);
   fs.writeFileSync(file, content, 'utf8');
+  
+  if (fullOutput) {
+    const logFile = path.join(dir, `${phase}.log`);
+    fs.writeFileSync(logFile, fullOutput, 'utf8');
+  }
+  
   return file;
 }
 
-function readArtifact(kanbanPath, taskId, phase) {
+function readArtifact(kanbanPath, taskId, phase, type = 'md') {
   if (!kanbanPath) return null;
-  const file = path.join(getArtifactsDir(kanbanPath, taskId), `${phase}.md`);
+  const file = path.join(getArtifactsDir(kanbanPath, taskId), `${phase}.${type}`);
   try { return fs.readFileSync(file, 'utf8'); } catch { return null; }
 }
 
@@ -97,12 +104,52 @@ function killCurrentPhase() {
   }
 }
 
-// ─── TIMEOUTS ────────────────────────────────────────────────
-// Tiempo máximo total por fase (IA puede tardar en CODE/TEST)
-const PHASE_TIMEOUT_MS      = 15 * 60 * 1000;   // 15 min
-// Si no llega ningún byte de output durante este tiempo → colgado
-// Claude puede pasar varios minutos leyendo archivos sin generar output
-const INACTIVITY_TIMEOUT_MS =  5 * 60 * 1000;   // 5 min sin actividad
+// ─── TIMEOUTS POR FASE ──────────────────────────────────────
+// CODE necesita mucho más tiempo: Claude lee archivos, piensa, escribe
+// PLAN/REVIEW/TEST son más cortos porque solo analizan
+const PHASE_TIMEOUTS = {
+  PLAN:   { total: 15 * 60 * 1000, inactivity:  8 * 60 * 1000 },  // 15min / 8min
+  CODE:   { total: 30 * 60 * 1000, inactivity: 12 * 60 * 1000 },  // 30min / 12min
+  REVIEW: { total: 15 * 60 * 1000, inactivity:  8 * 60 * 1000 },  // 15min / 8min
+  TEST:   { total: 20 * 60 * 1000, inactivity: 10 * 60 * 1000 },  // 20min / 10min
+  SCOPE:  { total: 15 * 60 * 1000, inactivity:  8 * 60 * 1000 },  // 15min / 8min
+};
+const DEFAULT_TIMEOUT = { total: 15 * 60 * 1000, inactivity: 8 * 60 * 1000 };
+
+// ─── DETECCIÓN DE INTERNET ──────────────────────────────────
+const https = require('https');
+
+function checkInternet() {
+  return new Promise((resolve) => {
+    const req = https.get('https://api.anthropic.com', { timeout: 10000 }, (res) => {
+      resolve(true);
+      res.resume();
+    });
+    req.on('error', () => resolve(false));
+    req.on('timeout', () => { req.destroy(); resolve(false); });
+  });
+}
+
+/**
+ * Espera a que haya internet. Reintenta cada waitSec segundos.
+ * Máximo maxWaitMin minutos antes de rendirse.
+ */
+async function waitForInternet(maxWaitMin = 10, waitSec = 15) {
+  const maxMs = maxWaitMin * 60 * 1000;
+  const start = Date.now();
+
+  while (Date.now() - start < maxMs) {
+    const online = await checkInternet();
+    if (online) return true;
+
+    const elapsed = Math.round((Date.now() - start) / 1000);
+    process.stdout.write(chalk.yellow(`\n  ⚠ Sin internet (${elapsed}s) — reintentando en ${waitSec}s...\n`));
+    await new Promise(r => setTimeout(r, waitSec * 1000));
+  }
+
+  process.stdout.write(chalk.red(`\n  ✖ Sin internet por ${maxWaitMin} minutos — abortando\n`));
+  return false;
+}
 
 // ─────────────────────────────────────────────
 // DETECCIÓN DE CLIs
@@ -546,17 +593,24 @@ function runInteractiveBlocking(engine, projectPath, initialPrompt = null) {
 /**
  * Ejecuta una fase y retorna { output, marker, value, timedOut? }
  *
+ * @param {string} phaseType - Tipo de fase: PLAN, CODE, REVIEW, TEST, SCOPE
+ *   Se usa para seleccionar timeouts de PHASE_TIMEOUTS.
+ *
  * Timeouts:
- *  - PHASE_TIMEOUT_MS     : tiempo máximo total por fase
- *  - INACTIVITY_TIMEOUT_MS: tiempo máximo sin recibir ningún byte de output
+ *  - total      : tiempo máximo total por fase
+ *  - inactivity : tiempo máximo sin recibir ningún byte de output
  *
  * Si cualquiera se dispara → mata el proceso y retorna timedOut: true
  */
-function runPhase(engine, prompt, projectPath, label) {
+function runPhase(engine, prompt, projectPath, label, phaseType = 'PLAN') {
   return new Promise((resolve) => {
-    const mins = (ms) => `${ms / 60000}min`;
+    const timeouts = PHASE_TIMEOUTS[phaseType] || DEFAULT_TIMEOUT;
+    const totalMs = timeouts.total;
+    const inactivityMs = timeouts.inactivity;
+    const mins = (ms) => `${Math.round(ms / 60000)}min`;
+
     process.stdout.write(chalk.magenta(`\n  ┌─ FASE: ${label} ${'─'.repeat(Math.max(0, 50 - label.length))}\n`));
-    process.stdout.write(chalk.gray(`  │  ⏱  max ${mins(PHASE_TIMEOUT_MS)} · inactividad ${mins(INACTIVITY_TIMEOUT_MS)}\n`));
+    process.stdout.write(chalk.gray(`  │  ⏱  max ${mins(totalMs)} · inactividad ${mins(inactivityMs)}\n`));
 
     const startTime = Date.now();
     const { cmd, args, cwd, env } = buildCommand(engine, prompt, projectPath);
@@ -577,14 +631,14 @@ function runPhase(engine, prompt, projectPath, label) {
 
     // Timer total de la fase
     const phaseTimer = setTimeout(
-      () => killProc(`la fase superó ${mins(PHASE_TIMEOUT_MS)}`),
-      PHASE_TIMEOUT_MS,
+      () => killProc(`la fase superó ${mins(totalMs)}`),
+      totalMs,
     );
 
     // Timer de inactividad (se reinicia con cada chunk)
     let inactivityTimer = setTimeout(
-      () => killProc(`sin actividad durante ${mins(INACTIVITY_TIMEOUT_MS)}`),
-      INACTIVITY_TIMEOUT_MS,
+      () => killProc(`sin actividad durante ${mins(inactivityMs)}`),
+      inactivityMs,
     );
 
     const clearTimers = () => {
@@ -599,8 +653,8 @@ function runPhase(engine, prompt, projectPath, label) {
       // Reiniciar inactividad con cada byte recibido
       clearTimeout(inactivityTimer);
       inactivityTimer = setTimeout(
-        () => killProc(`sin actividad durante ${mins(INACTIVITY_TIMEOUT_MS)}`),
-        INACTIVITY_TIMEOUT_MS,
+        () => killProc(`sin actividad durante ${mins(inactivityMs)}`),
+        inactivityMs,
       );
     });
     capture.pipe(process.stdout, { end: false });
@@ -693,12 +747,38 @@ async function executeTask(task, options = {}) {
 
   if (dryRun) {
     console.log(chalk.yellow('  🔍 DRY RUN — ciclo simulado'));
-    return { success: true, summary: '[DRY RUN] Simulado', iterations: 0, phasesRecord: null };
+    return { 
+      success: true, 
+      summary: '[DRY RUN] Simulado', 
+      iterations: 0, 
+      phasesRecord: {
+        plan: { status: 'skipped', duration: 0, summary: 'DRY RUN' },
+        code: [],
+        review: [],
+        test: [],
+        scope: { status: 'skipped', duration: 0, summary: '' },
+        result: 'dry-run',
+        totalDuration: 0,
+      },
+    };
   }
 
   const engine = detectAvailableEngine(preferredEngine);
   if (!engine) {
-    return { success: false, reason: 'No se encontró `claude` ni `opencode` en el sistema.', phasesRecord: null };
+    return { 
+      success: false, 
+      reason: 'No se encontró `claude` ni `opencode` en el sistema.', 
+      iterations: 0,
+      phasesRecord: { 
+        plan: { status: 'skipped', duration: 0, summary: 'Sin motor IA disponible' },
+        code: [],
+        review: [],
+        test: [],
+        scope: { status: 'skipped', duration: 0, summary: '' },
+        result: 'no-engine',
+        totalDuration: 0,
+      },
+    };
   }
 
   // ── MODO INTERACTIVO ─────────────────────────────────────────
@@ -721,9 +801,14 @@ Por favor, analiza esta tarea y realiza los cambios necesarios en el proyecto.`;
       summary: result.success ? 'Sesión interactiva completada' : 'Sesión terminada con errores',
       iterations: 1,
       phasesRecord: { 
-        interactive: true, 
-        duration: result.duration,
-        result: result.success ? 'success' : 'failed' 
+        plan: { status: 'skipped', duration: 0, summary: 'Modo interactivo' },
+        code: [{ iteration: 1, status: result.success ? 'ok' : 'failed', duration: result.duration, summary: 'Sesión interactiva' }],
+        review: [],
+        test: [],
+        scope: { status: 'skipped', duration: 0, summary: '' },
+        result: result.success ? 'success' : 'failed',
+        totalDuration: result.duration,
+        interactive: true,
       },
     };
   }
@@ -762,7 +847,24 @@ Por favor, analiza esta tarea y realiza los cambios necesarios en el proyecto.`;
     code: [],
     review: [],
     test: [],
+    scope: { status: 'pending', duration: 0, summary: '' },
   };
+
+  // ── VERIFICAR INTERNET ANTES DE EMPEZAR ──────────────────
+  const online = await checkInternet();
+  if (!online) {
+    console.log(chalk.yellow(`  ⚠ Sin internet — esperando conexión...`));
+    const recovered = await waitForInternet();
+    if (!recovered) {
+      return {
+        success: false,
+        reason: 'Sin conexión a internet tras 10 minutos de espera',
+        iterations: 0,
+        phasesRecord: { ...phasesRecord, result: 'no-internet', totalDuration: Date.now() - executionStart },
+      };
+    }
+    console.log(chalk.green(`  ✔ Internet recuperado — continuando`));
+  }
 
   // ── FASE 1: PLAN ──────────────────────────────────────────
   const planResult = await runPhase(
@@ -770,6 +872,7 @@ Por favor, analiza esta tarea y realiza los cambios necesarios en el proyecto.`;
     promptPlan(task, projectPath, projectContext, previousAttempts),
     projectPath,
     'PLAN — Análisis y planificación',
+    'PLAN',
   );
 
   let plan;
@@ -778,7 +881,7 @@ Por favor, analiza esta tarea y realiza los cambios necesarios en el proyecto.`;
     console.log(chalk.red(`  ✖ PLAN agotó el tiempo — abortando tarea`));
     return {
       success: false,
-      reason: `PLAN no respondió en ${PHASE_TIMEOUT_MS / 60000} minutos`,
+      reason: `PLAN no respondió en ${PHASE_TIMEOUTS.PLAN.total / 60000} minutos`,
       iterations: 0,
       phasesRecord: { ...phasesRecord, result: 'timeout', totalDuration: Date.now() - executionStart },
     };
@@ -794,7 +897,16 @@ Por favor, analiza esta tarea y realiza los cambios necesarios en el proyecto.`;
   }
 
   // Guardar artefacto del plan
-  const planFile = saveArtifact(kanbanPath, task.id, 'plan', `# Plan — Tarea #${task.id}: ${task.title}\n\n${plan}\n\n---\n_Generado: ${new Date().toISOString()} | Engine: ${engine} | Duración: ${Math.round(planResult.duration / 1000)}s_\n`);
+  const planFile = saveArtifact(
+    kanbanPath, task.id, 'plan',
+    `# Plan — Tarea #${task.id}: ${task.title}\n\n` +
+    `**Engine:** ${engine}\n` +
+    `**Duración:** ${Math.round(planResult.duration / 1000)}s\n` +
+    `**ExitCode:** ${planResult.exitCode}\n` +
+    `**TimedOut:** ${planResult.timedOut}\n\n` +
+    `---\n\n${plan}\n`,
+    planResult.output
+  );
   if (planFile) console.log(chalk.gray(`  💾 Plan guardado: ${planFile}`));
 
   // ── CICLO: CODE → REVIEW → TEST  (architecture: solo CODE) ──
@@ -806,6 +918,25 @@ Por favor, analiza esta tarea y realiza los cambios necesarios en el proyecto.`;
     iteration++;
     console.log(chalk.blue(`\n  ━━━ Iteración ${iteration}/${MAX_ITERATIONS} ━━━`));
 
+    // ── Verificar internet antes de CODE ────────────────────
+    if (!(await checkInternet())) {
+      console.log(chalk.yellow(`  ⚠ Sin internet antes de CODE — esperando...`));
+      const recovered = await waitForInternet();
+      if (!recovered) {
+        // Sin internet no es culpa del código — no contar como iteración
+        iteration--;
+        phasesRecord.code.push({ iteration: iteration + 1, status: 'no-internet', duration: 0, summary: 'Sin internet' });
+        console.log(chalk.red(`  ✖ Sin internet — pausando tarea`));
+        return {
+          success: false,
+          reason: 'Sin conexión a internet',
+          iterations: iteration,
+          phasesRecord: { ...phasesRecord, result: 'no-internet', totalDuration: Date.now() - executionStart },
+        };
+      }
+      console.log(chalk.green(`  ✔ Internet recuperado`));
+    }
+
     // ── FASE 2: CODE ────────────────────────────────────────
     const codePrompt = isArchitecture
       ? promptCodeArchitecture(task, projectPath, plan)
@@ -816,6 +947,7 @@ Por favor, analiza esta tarea y realiza los cambios necesarios en el proyecto.`;
       codePrompt,
       projectPath,
       `CODE — ${isArchitecture ? 'Scaffolding' : 'Implementación'} (iter ${iteration})`,
+      'CODE',
     );
 
     const codeOk = codeResult.marker === 'RESULTADO'
@@ -824,11 +956,35 @@ Por favor, analiza esta tarea y realiza los cambios necesarios en el proyecto.`;
 
     if (codeResult.timedOut || !codeOk) {
       const reason = codeResult.timedOut
-        ? `CODE no respondió en ${PHASE_TIMEOUT_MS / 60000} minutos (proceso colgado)`
+        ? `CODE no respondió en ${PHASE_TIMEOUTS.CODE.total / 60000} minutos (proceso colgado)`
         : (codeResult.value || `Salió con código ${codeResult.exitCode}`);
       const status = codeResult.timedOut ? 'timeout' : 'failed';
       phasesRecord.code.push({ iteration, status, duration: codeResult.duration, summary: reason });
       console.log(chalk.red(`  ✖ CODE ${status}: ${reason}`));
+
+      // ── TIMEOUT NO CUENTA COMO ITERACIÓN ──────────────────
+      // Si fue timeout, puede ser que la tarea simplemente necesite más tiempo
+      // o que se cayó internet. No desperdiciar un intento.
+      if (codeResult.timedOut) {
+        iteration--;
+        console.log(chalk.yellow(`  ↩ Timeout no cuenta como iteración (quedan ${MAX_ITERATIONS - iteration})`));
+        // Verificar si fue por internet
+        if (!(await checkInternet())) {
+          console.log(chalk.yellow(`  ⚠ Parece que se perdió internet — esperando...`));
+          const recovered = await waitForInternet();
+          if (!recovered) {
+            return {
+              success: false,
+              reason: 'Sin conexión a internet tras timeout',
+              iterations: iteration,
+              phasesRecord: { ...phasesRecord, result: 'no-internet', totalDuration: Date.now() - executionStart },
+            };
+          }
+        }
+        feedback = `La fase CODE anterior fue terminada por timeout (${Math.round(codeResult.duration / 60000)} min). Intenta una solución más directa y enfocada.`;
+        continue;
+      }
+
       if (iteration >= MAX_ITERATIONS) {
         return {
           success: false,
@@ -837,22 +993,57 @@ Por favor, analiza esta tarea y realiza los cambios necesarios en el proyecto.`;
           phasesRecord: { ...phasesRecord, result: 'failed', totalDuration: Date.now() - executionStart },
         };
       }
-      feedback = codeResult.timedOut
-        ? `La fase CODE se colgó y fue terminada por timeout. Intenta una solución más simple y directa.`
-        : `La implementación anterior falló: ${reason}. Intenta un enfoque diferente.`;
+      feedback = `La implementación anterior falló: ${reason}. Intenta un enfoque diferente.`;
       continue;
     }
 
     const codeSummary = codeResult.value?.replace(/^completado\s*-?\s*/i, '') || 'Implementado';
     finalCodeSummary = codeSummary;
-    phasesRecord.code.push({ iteration, status: 'ok', duration: codeResult.duration, summary: codeSummary });
+    phasesRecord.code.push({
+      iteration,
+      status: 'ok',
+      duration: codeResult.duration,
+      summary: codeSummary,
+      exitCode: codeResult.exitCode,
+      timedOut: codeResult.timedOut,
+      outputLength: codeResult.output?.length || 0,
+    });
     console.log(chalk.cyan(`  ✔ CODE completado: ${codeSummary}`));
 
     // Guardar artefacto del código
-    saveArtifact(kanbanPath, task.id, `code-iter${iteration}`, `# Code — Tarea #${task.id} (iter ${iteration})\n\n**Resultado:** ${codeSummary}\n\n---\n_${new Date().toISOString()} | ${Math.round(codeResult.duration / 1000)}s_\n`);
+    saveArtifact(
+      kanbanPath, task.id, `code-iter${iteration}`,
+      `# Code — Tarea #${task.id} (iter ${iteration})\n\n` +
+      `**Resultado:** ${codeSummary}\n\n` +
+      `**Métricas:**\n` +
+      `- Duración: ${Math.round(codeResult.duration / 1000)}s\n` +
+      `- ExitCode: ${codeResult.exitCode}\n` +
+      `- TimedOut: ${codeResult.timedOut}\n` +
+      `- Output: ${(codeResult.output?.length || 0).toLocaleString()} chars\n\n` +
+      `---\n_Generado: ${new Date().toISOString()}_\n`,
+      codeResult.output
+    );
 
     // ── Architecture: salta REVIEW y TEST, va directo a SCOPE ─
     if (isArchitecture) break;
+
+    // ── Verificar internet antes de REVIEW ────────────────
+    if (!(await checkInternet())) {
+      console.log(chalk.yellow(`  ⚠ Sin internet antes de REVIEW — esperando...`));
+      if (!(await waitForInternet())) {
+        // No perder el trabajo hecho — marcar como review pendiente
+        phasesRecord.review.push({ iteration, status: 'no-internet', duration: 0, summary: 'Sin internet' });
+        return {
+          success: true,
+          scopeIncomplete: true,
+          scopeNote: 'Review no ejecutado por falta de internet. Revisar manualmente.',
+          summary: finalCodeSummary,
+          iterations: iteration,
+          plan,
+          phasesRecord: { ...phasesRecord, result: 'no-internet-review', totalDuration: Date.now() - executionStart },
+        };
+      }
+    }
 
     // ── FASE 3: REVIEW ──────────────────────────────────────
     const reviewResult = await runPhase(
@@ -860,6 +1051,7 @@ Por favor, analiza esta tarea y realiza los cambios necesarios en el proyecto.`;
       promptReview(task, projectPath, plan),
       projectPath,
       'REVIEW — Revisión de código',
+      'REVIEW',
     );
 
     const reviewApproved = reviewResult.marker === 'REVIEW'
@@ -868,7 +1060,7 @@ Por favor, analiza esta tarea y realiza los cambios necesarios en el proyecto.`;
 
     if (reviewResult.timedOut || !reviewApproved) {
       const problems = reviewResult.timedOut
-        ? `REVIEW no respondió en ${PHASE_TIMEOUT_MS / 60000} minutos (proceso colgado)`
+        ? `REVIEW no respondió en ${PHASE_TIMEOUTS.REVIEW.total / 60000} minutos (proceso colgado)`
         : (reviewResult.value?.replace(/^rechazado\s*-?\s*/i, '') || 'Problemas no especificados');
       const status = reviewResult.timedOut ? 'timeout' : 'rejected';
       phasesRecord.review.push({ iteration, status, duration: reviewResult.duration, summary: problems });
@@ -888,11 +1080,47 @@ Por favor, analiza esta tarea y realiza los cambios necesarios en el proyecto.`;
     }
 
     const reviewComment = reviewResult.value?.replace(/^aprobado\s*-?\s*/i, '') || 'OK';
-    phasesRecord.review.push({ iteration, status: 'approved', duration: reviewResult.duration, summary: reviewComment });
+    phasesRecord.review.push({
+      iteration,
+      status: 'approved',
+      duration: reviewResult.duration,
+      summary: reviewComment,
+      exitCode: reviewResult.exitCode,
+      timedOut: reviewResult.timedOut,
+      outputLength: reviewResult.output?.length || 0,
+    });
     console.log(chalk.cyan(`  ✔ REVIEW aprobado: ${reviewComment}`));
 
     // Guardar artefacto del review
-    saveArtifact(kanbanPath, task.id, `review-iter${iteration}`, `# Review — Tarea #${task.id} (iter ${iteration})\n\n**Veredicto:** Aprobado\n**Comentario:** ${reviewComment}\n\n---\n_${new Date().toISOString()} | ${Math.round(reviewResult.duration / 1000)}s_\n`);
+    saveArtifact(
+      kanbanPath, task.id, `review-iter${iteration}`,
+      `# Review — Tarea #${task.id} (iter ${iteration})\n\n` +
+      `**Veredicto:** Aprobado\n` +
+      `**Comentario:** ${reviewComment}\n\n` +
+      `**Métricas:**\n` +
+      `- Duración: ${Math.round(reviewResult.duration / 1000)}s\n` +
+      `- ExitCode: ${reviewResult.exitCode}\n` +
+      `- Output: ${(reviewResult.output?.length || 0).toLocaleString()} chars\n\n` +
+      `---\n_Generado: ${new Date().toISOString()}_\n`,
+      reviewResult.output
+    );
+
+    // ── Verificar internet antes de TEST ──────────────────
+    if (!(await checkInternet())) {
+      console.log(chalk.yellow(`  ⚠ Sin internet antes de TEST — esperando...`));
+      if (!(await waitForInternet())) {
+        phasesRecord.test.push({ iteration, status: 'no-internet', duration: 0, summary: 'Sin internet' });
+        return {
+          success: true,
+          scopeIncomplete: true,
+          scopeNote: 'Tests no ejecutados por falta de internet. Revisar manualmente.',
+          summary: finalCodeSummary,
+          iterations: iteration,
+          plan,
+          phasesRecord: { ...phasesRecord, result: 'no-internet-test', totalDuration: Date.now() - executionStart },
+        };
+      }
+    }
 
     // ── FASE 4: TEST ────────────────────────────────────────
     const testResult = await runPhase(
@@ -900,6 +1128,7 @@ Por favor, analiza esta tarea y realiza los cambios necesarios en el proyecto.`;
       promptTest(task, projectPath),
       projectPath,
       'TEST — Verificación funcional',
+      'TEST',
     );
 
     const testsOk = testResult.marker === 'TESTS'
@@ -908,7 +1137,7 @@ Por favor, analiza esta tarea y realiza los cambios necesarios en el proyecto.`;
 
     if (testResult.timedOut || !testsOk) {
       const testFailure = testResult.timedOut
-        ? `TEST no respondió en ${PHASE_TIMEOUT_MS / 60000} minutos (proceso colgado o tests infinitos)`
+        ? `TEST no respondió en ${PHASE_TIMEOUTS.TEST.total / 60000} minutos (proceso colgado o tests infinitos)`
         : (testResult.value?.replace(/^fallido\s*-?\s*/i, '') || 'Tests fallaron');
       const status = testResult.timedOut ? 'timeout' : 'failed';
       phasesRecord.test.push({ iteration, status, duration: testResult.duration, summary: testFailure });
@@ -928,11 +1157,30 @@ Por favor, analiza esta tarea y realiza los cambios necesarios en el proyecto.`;
     }
 
     const testSummary = testResult.value?.replace(/^ok\s*-?\s*/i, '') || 'Tests pasaron';
-    phasesRecord.test.push({ iteration, status: 'ok', duration: testResult.duration, summary: testSummary });
+    phasesRecord.test.push({
+      iteration,
+      status: 'ok',
+      duration: testResult.duration,
+      summary: testSummary,
+      exitCode: testResult.exitCode,
+      timedOut: testResult.timedOut,
+      outputLength: testResult.output?.length || 0,
+    });
     console.log(chalk.green(`  ✔ TESTS OK: ${testSummary}`));
 
     // Guardar artefacto de tests
-    saveArtifact(kanbanPath, task.id, `test-iter${iteration}`, `# Tests — Tarea #${task.id} (iter ${iteration})\n\n**Resultado:** OK\n**Detalle:** ${testSummary}\n\n---\n_${new Date().toISOString()} | ${Math.round(testResult.duration / 1000)}s_\n`);
+    saveArtifact(
+      kanbanPath, task.id, `test-iter${iteration}`,
+      `# Tests — Tarea #${task.id} (iter ${iteration})\n\n` +
+      `**Resultado:** OK\n` +
+      `**Detalle:** ${testSummary}\n\n` +
+      `**Métricas:**\n` +
+      `- Duración: ${Math.round(testResult.duration / 1000)}s\n` +
+      `- ExitCode: ${testResult.exitCode}\n` +
+      `- Output: ${(testResult.output?.length || 0).toLocaleString()} chars\n\n` +
+      `---\n_Generado: ${new Date().toISOString()}_\n`,
+      testResult.output
+    );
 
     finalCodeSummary = codeSummary;
     break; // salir del while para ir a SCOPE
@@ -947,6 +1195,7 @@ Por favor, analiza esta tarea y realiza los cambios necesarios en el proyecto.`;
       promptScope(task, projectPath, plan, finalCodeSummary, kanbanPath, projectContext),
       projectPath,
       'SCOPE — Validación de requisitos y contexto',
+      'SCOPE',
     );
 
     const scopeOk = scopeResult.timedOut
@@ -985,11 +1234,29 @@ Por favor, analiza esta tarea y realiza los cambios necesarios en el proyecto.`;
     }
 
     const scopeSummary = scopeResult.value?.replace(/^ok\s*-?\s*/i, '') || 'Requisitos verificados';
-    phasesRecord.scope = { status: 'ok', duration: scopeResult.duration, summary: scopeSummary };
+    phasesRecord.scope = {
+      status: 'ok',
+      duration: scopeResult.duration,
+      summary: scopeSummary,
+      exitCode: scopeResult.exitCode,
+      timedOut: scopeResult.timedOut,
+      outputLength: scopeResult.output?.length || 0,
+    };
     console.log(chalk.green(`  ✔ SCOPE ok: ${scopeSummary}`));
 
     // Guardar artefacto de scope
-    saveArtifact(kanbanPath, task.id, 'scope', `# Scope — Tarea #${task.id}: ${task.title}\n\n**Veredicto:** OK\n**Detalle:** ${scopeSummary}\n\n---\n_${new Date().toISOString()} | ${Math.round(scopeResult.duration / 1000)}s_\n`);
+    saveArtifact(
+      kanbanPath, task.id, 'scope',
+      `# Scope — Tarea #${task.id}: ${task.title}\n\n` +
+      `**Veredicto:** OK\n` +
+      `**Detalle:** ${scopeSummary}\n\n` +
+      `**Métricas:**\n` +
+      `- Duración: ${Math.round(scopeResult.duration / 1000)}s\n` +
+      `- ExitCode: ${scopeResult.exitCode}\n` +
+      `- Output: ${(scopeResult.output?.length || 0).toLocaleString()} chars\n\n` +
+      `---\n_Generado: ${new Date().toISOString()}_\n`,
+      scopeResult.output
+    );
   } else if (finalCodeSummary) {
     // Sin kanbanPath no podemos leer/escribir contexto — continúa sin SCOPE
     console.log(chalk.gray('  ⚠ Sin kanbanPath — fase SCOPE omitida'));

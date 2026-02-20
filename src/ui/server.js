@@ -402,8 +402,72 @@ app.post('/api/projects/active', (req, res) => {
  */
 app.get('/api/tasks/:id/history', async (req, res) => {
   try {
-    const history = getHistory(req.params.id);
+    const kanbanPath = getActiveKanbanPath();
+    const history = getHistory(req.params.id, kanbanPath);
     res.json({ success: true, data: history });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * GET /api/tasks/:id/artifacts/:phase - Leer artefacto de una fase específica
+ */
+app.get('/api/tasks/:id/artifacts/:phase', async (req, res) => {
+  try {
+    const { id, phase } = req.params;
+    const type = req.query.type || 'md';
+    const kanbanPath = getActiveKanbanPath();
+    const paddedId = String(id).padStart(3, '0');
+    const artifactPath = path.join(kanbanPath, '.history', paddedId, `${phase}.${type}`);
+    
+    if (!fs.existsSync(artifactPath)) {
+      return res.status(404).json({ success: false, error: 'Artefacto no encontrado' });
+    }
+    
+    const content = fs.readFileSync(artifactPath, 'utf8');
+    
+    if (type === 'log') {
+      res.type('text/plain').send(content);
+    } else {
+      res.type('text/markdown').send(content);
+    }
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * GET /api/tasks/:id/artifacts - Listar todos los artefactos de una tarea
+ */
+app.get('/api/tasks/:id/artifacts', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const kanbanPath = getActiveKanbanPath();
+    const paddedId = String(id).padStart(3, '0');
+    const artifactsDir = path.join(kanbanPath, '.history', paddedId);
+    
+    if (!fs.existsSync(artifactsDir)) {
+      return res.json({ success: true, data: [] });
+    }
+    
+    const allFiles = fs.readdirSync(artifactsDir);
+    const mdFiles = allFiles.filter(f => f.endsWith('.md'));
+    
+    const files = mdFiles.map(f => {
+      const name = f.replace('.md', '');
+      const hasLog = allFiles.includes(`${name}.log`);
+      const logSize = hasLog ? fs.statSync(path.join(artifactsDir, `${name}.log`)).size : 0;
+      return {
+        name,
+        path: f,
+        mtime: fs.statSync(path.join(artifactsDir, f)).mtime,
+        hasLog,
+        logSize,
+      };
+    });
+    
+    res.json({ success: true, data: files });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
