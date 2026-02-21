@@ -68,6 +68,31 @@ program
   });
 
 // ─────────────────────────────────────────────
+// COMANDO: retry
+// ─────────────────────────────────────────────
+program
+  .command('retry <id>')
+  .description('Mover tarea de REVIEW a TODO para reintentar')
+  .action((id) => {
+    const { retryCommand } = require('./commands/retry');
+    retryCommand(id);
+  });
+
+// ─────────────────────────────────────────────
+// COMANDO: unstuck
+// ─────────────────────────────────────────────
+program
+  .command('unstuck')
+  .description('Detectar y arreglar tareas atascadas')
+  .option('--all', 'Mover todas las tareas de REVIEW a TODO')
+  .option('--dry-run', 'Solo mostrar qué se haría, sin cambios')
+  .option('--project <path>', 'Ruta del proyecto')
+  .action((options) => {
+    const { unstuckCommand } = require('./commands/retry');
+    unstuckCommand(options);
+  });
+
+// ─────────────────────────────────────────────
 // COMANDO: start
 // ─────────────────────────────────────────────
 program

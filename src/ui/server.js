@@ -365,6 +365,107 @@ app.delete('/api/tasks/:id', async (req, res) => {
   }
 });
 
+/**
+ * POST /api/tasks/:id/retry - Mover tarea de REVIEW a TODO
+ */
+app.post('/api/tasks/:id/retry', async (req, res) => {
+  try {
+    const kanbanPath = getActiveKanbanPath();
+    const result = moveTask(req.params.id, 'todo', kanbanPath);
+    await invalidateTaskCache(req.params.id, [result.fromColumn, 'todo'], kanbanPath);
+    broadcastChange('moved');
+    sync.broadcastTaskMoved(req.params.id, result.fromColumn, 'todo', result.fileName);
+    notifications.create({
+      type: NOTIFICATION_TYPES.TASK_MOVED,
+      title: 'Tarea reintentada',
+      message: `#${req.params.id} ${result.fromColumn} → todo`,
+      meta: { taskId: req.params.id },
+    });
+    res.json({ success: true, from: result.fromColumn, to: 'todo' });
+  } catch (err) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * GET /api/unstuck - Detectar tareas atascadas
+ */
+app.get('/api/unstuck', (req, res) => {
+  try {
+    const kanbanPath = getActiveKanbanPath();
+    const inProgress = getTasks('in_progress', kanbanPath);
+    const review = getTasks('review', kanbanPath);
+    
+    const oneHourAgo = Date.now() - 60 * 60 * 1000;
+    const stuck = [];
+    
+    for (const task of inProgress) {
+      const startedAt = task.startedAt ? new Date(task.startedAt).getTime() : 0;
+      if (startedAt && startedAt < oneHourAgo) {
+        stuck.push({
+          id: task.id,
+          title: task.title,
+          column: 'in_progress',
+          startedAt: task.startedAt,
+          minutesAgo: Math.round((Date.now() - startedAt) / 60000),
+        });
+      }
+    }
+    
+    for (const task of review) {
+      stuck.push({
+        id: task.id,
+        title: task.title,
+        column: 'review',
+        retryCount: task.retryCount || 0,
+        lastError: task.lastError,
+      });
+    }
+    
+    res.json({ success: true, count: stuck.length, tasks: stuck });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * POST /api/unstuck - Arreglar tareas atascadas
+ */
+app.post('/api/unstuck', async (req, res) => {
+  try {
+    const kanbanPath = getActiveKanbanPath();
+    const { all } = req.body || {};
+    
+    const inProgress = getTasks('in_progress', kanbanPath);
+    const review = getTasks('review', kanbanPath);
+    
+    const oneHourAgo = Date.now() - 60 * 60 * 1000;
+    const fixed = [];
+    
+    for (const task of inProgress) {
+      const startedAt = task.startedAt ? new Date(task.startedAt).getTime() : 0;
+      if (startedAt && startedAt < oneHourAgo) {
+        moveTask(task.id, 'review', kanbanPath);
+        fixed.push({ id: task.id, from: 'in_progress', to: 'review' });
+      }
+    }
+    
+    if (all) {
+      for (const task of review) {
+        moveTask(task.id, 'todo', kanbanPath);
+        fixed.push({ id: task.id, from: 'review', to: 'todo' });
+      }
+    }
+    
+    cache.flush();
+    broadcastChange('moved');
+    
+    res.json({ success: true, fixed: fixed.length, tasks: fixed });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // ─────────────────────────────────────────────
 // API ENDPOINTS — PROYECTOS
 // ─────────────────────────────────────────────
