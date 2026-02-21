@@ -252,6 +252,7 @@ El tablero visual en `http://localhost:3847` permite:
 | `GET /api/notifications` | Notificaciones |
 | `PUT /api/notifications/read` | Marcar como leídas |
 | `GET /api/sync` | Estado de sincronización |
+| `POST /api/sync` | Solicitar sincronización manual |
 
 ### WebSocket
 
@@ -355,6 +356,13 @@ Si tienes Redis corriendo, el sistema lo usa para cachear tareas y mejorar rendi
 ## Sincronización entre equipos (Multi-usuario)
 
 Varias personas pueden trabajar en el mismo tablero simultáneamente. Los cambios se sincronizan en tiempo real via WebSocket.
+
+### Características
+
+- **Identificación automática**: Usa tu `git config user.name` como identificador
+- **Sincronización inicial**: Al conectar, descarga tareas existentes de otros peers
+- **Detección de conflictos**: Compara fechas de modificación (gana el más reciente)
+- **Historial de quién hizo qué**: Cada cambio muestra el nombre del autor
 
 ### Arquitectura
 

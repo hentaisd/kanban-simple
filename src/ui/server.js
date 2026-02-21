@@ -1101,6 +1101,18 @@ app.get('/api/sync', (req, res) => {
   res.json({ success: true, ...sync.getStatus() });
 });
 
+/**
+ * POST /api/sync - Solicitar sincronización manual
+ */
+app.post('/api/sync', (req, res) => {
+  try {
+    sync.requestSync();
+    res.json({ success: true, message: 'Sincronización solicitada' });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // ─────────────────────────────────────────────
 
 /**
