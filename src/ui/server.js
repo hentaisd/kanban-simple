@@ -2,6 +2,8 @@
  * server.js - API REST + WebSocket + servidor de archivos estáticos para el Kanban UI
  */
 
+require('dotenv').config();
+
 const http = require('http');
 const express = require('express');
 const path = require('path');
@@ -23,6 +25,7 @@ const cache = require('../core/cache');
 const { getHistory } = require('../core/history');
 const GitService = require('../git/gitService');
 const { NotificationManager, NOTIFICATION_TYPES } = require('../core/notifications');
+const sync = require('../core/sync');
 
 const app = express();
 
@@ -265,6 +268,7 @@ app.post('/api/tasks', async (req, res) => {
 
     await invalidateTaskCache(id, [column], kanbanPath);
     broadcastChange('created');
+    sync.broadcastTaskCreated(task, column, task.filePath);
     notifications.create({
       type: NOTIFICATION_TYPES.TASK_CREATED,
       title: 'Tarea creada',
@@ -292,6 +296,7 @@ app.put('/api/tasks/:id/move', async (req, res) => {
     const result = moveTask(req.params.id, column, kanbanPath);
     await invalidateTaskCache(req.params.id, [result.fromColumn, result.toColumn], kanbanPath);
     broadcastChange('moved');
+    sync.broadcastTaskMoved(req.params.id, result.fromColumn, result.toColumn, result.fileName);
     notifications.create({
       type: NOTIFICATION_TYPES.TASK_MOVED,
       title: 'Tarea movida',
@@ -320,6 +325,7 @@ app.put('/api/tasks/:id', async (req, res) => {
 
     await invalidateTaskCache(req.params.id, [found.column], kanbanPath);
     broadcastChange('updated');
+    sync.broadcastTaskUpdated(updatedTask, found.column, found.filePath);
     notifications.create({
       type: NOTIFICATION_TYPES.TASK_UPDATED,
       title: 'Tarea actualizada',
@@ -341,10 +347,12 @@ app.delete('/api/tasks/:id', async (req, res) => {
     const kanbanPath = getActiveKanbanPath();
     const found = await getTaskByIdCached(req.params.id, kanbanPath);
     const column = found ? found.column : null;
+    const fileName = found ? found.fileName : null;
 
     deleteTask(req.params.id, kanbanPath);
     await invalidateTaskCache(req.params.id, [column], kanbanPath);
     broadcastChange('deleted');
+    sync.broadcastTaskDeleted(req.params.id, column, fileName);
     notifications.create({
       type: NOTIFICATION_TYPES.TASK_DELETED,
       title: 'Tarea eliminada',
@@ -982,6 +990,17 @@ app.get('/api/health', (req, res) => {
 // ─────────────────────────────────────────────
 // API ENDPOINTS — NOTIFICACIONES
 // ─────────────────────────────────────────────
+// API ENDPOINTS — SYNC
+// ─────────────────────────────────────────────
+
+/**
+ * GET /api/sync - Estado de sincronización
+ */
+app.get('/api/sync', (req, res) => {
+  res.json({ success: true, ...sync.getStatus() });
+});
+
+// ─────────────────────────────────────────────
 
 /**
  * GET /api/notifications - Obtener notificaciones
@@ -1037,10 +1056,24 @@ wss.on('connection', (ws) => {
 });
 
 cache.connect().then(() => {
+  const kanbanPath = getActiveKanbanPath();
+  sync.connectSync(kanbanPath, (msg) => {
+    cache.flush();
+    broadcastChange(msg.type);
+    notifications.create({
+      type: NOTIFICATION_TYPES.SYSTEM,
+      title: 'Sincronización',
+      message: `Cambio recibido de otro equipo`,
+      meta: msg,
+    });
+  });
+  
   server.listen(PORT, () => {
     console.log(`\n🖥  AI-Kanban UI corriendo en: http://localhost:${PORT}`);
     console.log(`🔌 WebSocket activo en: ws://localhost:${PORT}/ws`);
-    console.log(`📁 Kanban path: ${getActiveKanbanPath()}`);
+    console.log(`📁 Kanban path: ${kanbanPath}`);
+    const syncStatus = sync.getStatus();
+    console.log(`🔄 Sync: ${syncStatus.connected ? 'conectado' : 'desconectado'} (${syncStatus.relayUrl})`);
     const cacheStatus = cache.getStatus();
     console.log(`🗄  Cache Redis: ${cacheStatus.connected ? `conectado (${cacheStatus.url})` : 'no disponible (modo sin caché)'}\n`);
   });

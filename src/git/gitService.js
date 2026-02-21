@@ -10,6 +10,7 @@
 
 const simpleGit = require('simple-git');
 const path = require('path');
+const fs = require('fs');
 const chalk = require('chalk');
 
 const PROJECT_ROOT = path.resolve(__dirname, '../../');
@@ -334,10 +335,13 @@ class GitService {
   /**
    * Verifica que el repo está en estado limpio y en el branch correcto.
    * Si no, intenta corregirlo.
+   * IMPORTANTE: Preserva archivos kanban/ durante el reset para no perder
+   * movimientos de tareas hechos desde la UI/API.
+   * @param {string} expectedBranch
+   * @param {string} [kanbanPath] - Ruta al directorio kanban (para preservarlo)
    * @returns {{ clean: boolean, branch: string, fixed: boolean }}
    */
-  async verify(expectedBranch) {
-    const branch = await this.getCurrentBranch();
+  async verify(expectedBranch, kanbanPath) {
     const dirty = await this.getDirtyCount();
     let fixed = false;
 
@@ -346,15 +350,22 @@ class GitService {
     if (status.conflicted.length > 0) {
       console.log(chalk.red(`  ✖ ${status.conflicted.length} archivo(s) en conflicto — abortando merge`));
       try { await this.git.merge(['--abort']); } catch {}
-      await this.hardReset();
+      await this._safeReset(kanbanPath);
       fixed = true;
     }
 
-    // Check dirty
+    // Check dirty (excluir kanban/ del conteo)
     if (dirty > 0) {
-      console.log(chalk.yellow(`  ⚠ ${dirty} archivos sucios — limpiando`));
-      await this.hardReset();
-      fixed = true;
+      const kanbanDirtyCount = this._countKanbanDirty(status);
+      const nonKanbanDirty = dirty - kanbanDirtyCount;
+
+      if (nonKanbanDirty > 0) {
+        console.log(chalk.yellow(`  ⚠ ${nonKanbanDirty} archivos sucios (+ ${kanbanDirtyCount} kanban preservados) — limpiando`));
+        await this._safeReset(kanbanPath);
+        fixed = true;
+      } else if (kanbanDirtyCount > 0) {
+        console.log(chalk.gray(`  │ ${kanbanDirtyCount} cambios kanban preservados (movimientos de tareas)`));
+      }
     }
 
     // Check branch
@@ -364,7 +375,7 @@ class GitService {
       try {
         await this.git.checkout(expectedBranch);
       } catch {
-        await this.hardReset();
+        await this._safeReset(kanbanPath);
         await this.git.checkout(expectedBranch);
       }
       fixed = true;
@@ -378,6 +389,84 @@ class GitService {
       dirty: finalDirty,
       fixed,
     };
+  }
+
+  /**
+   * Cuenta archivos dirty dentro de kanban/
+   */
+  _countKanbanDirty(status) {
+    const all = [
+      ...status.modified,
+      ...status.created,
+      ...status.deleted,
+      ...status.not_added,
+      ...status.renamed.map(r => r.to || r),
+    ];
+    return all.filter(f => f.startsWith('kanban/')).length;
+  }
+
+  /**
+   * Hard reset que preserva el directorio kanban.
+   * Guarda los archivos kanban antes del reset y los restaura después.
+   */
+  async _safeReset(kanbanPath) {
+    if (!kanbanPath) {
+      await this.hardReset();
+      return;
+    }
+
+    // Guardar estado actual de kanban/
+    const kanbanBackup = this._backupKanbanDir(kanbanPath);
+
+    await this.hardReset();
+
+    // Restaurar kanban/
+    if (kanbanBackup.length > 0) {
+      this._restoreKanbanDir(kanbanBackup);
+      console.log(chalk.gray(`  │ ${kanbanBackup.length} archivos kanban restaurados`));
+    }
+  }
+
+  /**
+   * Guarda una copia en memoria de los archivos kanban y sus rutas.
+   * Incluye tareas (.md en columnas) y archivos de sistema (.json, .md en raíz).
+   */
+  _backupKanbanDir(kanbanPath) {
+    const backup = [];
+    try {
+      // Backup tareas en columnas
+      const columns = ['backlog', 'todo', 'in_progress', 'review', 'done'];
+      for (const col of columns) {
+        const dir = path.join(kanbanPath, col);
+        if (!fs.existsSync(dir)) continue;
+        const files = fs.readdirSync(dir).filter(f => f.endsWith('.md'));
+        for (const file of files) {
+          const filePath = path.join(dir, file);
+          backup.push({ filePath, content: fs.readFileSync(filePath, 'utf8') });
+        }
+      }
+      // Backup archivos de sistema en raíz del kanban
+      const systemFiles = ['.engine.json', '.active-project.json', '.project-context.md', 'projects.json'];
+      for (const sf of systemFiles) {
+        const filePath = path.join(kanbanPath, sf);
+        if (fs.existsSync(filePath)) {
+          backup.push({ filePath, content: fs.readFileSync(filePath, 'utf8') });
+        }
+      }
+    } catch {}
+    return backup;
+  }
+
+  /**
+   * Restaura archivos kanban desde el backup
+   */
+  _restoreKanbanDir(backup) {
+    for (const { filePath, content } of backup) {
+      try {
+        fs.mkdirSync(path.dirname(filePath), { recursive: true });
+        fs.writeFileSync(filePath, content, 'utf8');
+      } catch {}
+    }
   }
 
   /**

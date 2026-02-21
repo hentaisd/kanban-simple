@@ -29,7 +29,22 @@ const LOG_FILE = '/tmp/kanban-motor.log';
 fs.writeFileSync(PID_FILE, String(process.pid));
 const cleanPid = () => { try { fs.unlinkSync(PID_FILE); } catch {} };
 process.on('exit', cleanPid);
-process.on('uncaughtException', (err) => { cleanPid(); console.error(err); process.exit(1); });
+process.on('uncaughtException', (err) => {
+  cleanPid();
+  const msg = `\n  ❌ UNCAUGHT EXCEPTION:\n${err.stack || err.message || err}\n`;
+  fs.writeFileSync(LOG_FILE, msg, { flag: 'a' });
+  fs.writeFileSync('/tmp/kanban-crash.log', msg);
+  try { console.error(msg); } catch {}
+  process.exit(1);
+});
+process.on('unhandledRejection', (err) => {
+  cleanPid();
+  const msg = `\n  ❌ UNHANDLED REJECTION:\n${err?.stack || err?.message || err}\n`;
+  fs.writeFileSync(LOG_FILE, msg, { flag: 'a' });
+  fs.writeFileSync('/tmp/kanban-crash.log', msg);
+  try { console.error(msg); } catch {}
+  process.exit(1);
+});
 
 // ── Log file — escribe directo a disco para que la UI siempre tenga logs ──
 // Si stdout ya está redirigido a archivo (desde server.js), solo necesitamos
@@ -318,12 +333,16 @@ function moveTaskToRetry(task, kanbanPath) {
 // ─────────────────────────────────────────────
 
 async function processTask(task, config) {
+  fs.appendFileSync('/tmp/kanban-debug.log', `[${new Date().toISOString()}] processTask START: ${task.id}\n`);
   const { engine, interactive } = config;
 
-  const taskProjectPath = resolveProjectPath(config);
-  const kanbanPath = getKanbanPath(taskProjectPath);
+  // Usar paths pasados explícitamente para evitar re-resolución que puede
+  // apuntar a otro proyecto si .active-project.json cambió entre ciclos
+  const taskProjectPath = config.projectPath || resolveProjectPath(config);
+  const kanbanPath = config.kanbanPath || getKanbanPath(taskProjectPath);
   const gitCfg = resolveGitConfig(config);
   const taskStart = Date.now();
+  fs.appendFileSync('/tmp/kanban-debug.log', `[${new Date().toISOString()}] paths resolved: project=${taskProjectPath}, kanban=${kanbanPath}\n`);
 
   console.log(chalk.blue.bold(`\n${'═'.repeat(62)}`));
   console.log(chalk.blue.bold(`  TAREA #${task.id}: ${task.title}`));
@@ -339,11 +358,15 @@ async function processTask(task, config) {
   console.log('');
 
   // ── PASO 1: todo → in_progress + actualizar startedAt ───
+  fs.appendFileSync('/tmp/kanban-debug.log', `[${new Date().toISOString()}] STEP 1: moveTask to in_progress\n`);
   moveTask(task.id, 'in_progress', kanbanPath);
+  fs.appendFileSync('/tmp/kanban-debug.log', `[${new Date().toISOString()}] STEP 1: moveTask done\n`);
   updateTaskFields(task.id, { startedAt: new Date().toISOString() }, kanbanPath);
+  fs.appendFileSync('/tmp/kanban-debug.log', `[${new Date().toISOString()}] STEP 1: fields updated\n`);
   console.log(chalk.cyan('  [1/6] Estado: todo → in_progress'));
 
   const gitService = new GitService(taskProjectPath);
+  fs.appendFileSync('/tmp/kanban-debug.log', `[${new Date().toISOString()}] STEP 2: GitService created\n`);
   let taskResult = null;
   let gitEnabled = false;
   let stashed = false;
@@ -356,7 +379,7 @@ async function processTask(task, config) {
         gitEnabled = true;
 
         // Verificar estado limpio ANTES de empezar
-        const preCheck = await gitService.verify(gitCfg.defaultBranch);
+        const preCheck = await gitService.verify(gitCfg.defaultBranch, kanbanPath);
         if (preCheck.fixed) {
           console.log(chalk.yellow(`  [2/6] Git: estado corregido antes de empezar`));
         }
@@ -431,7 +454,7 @@ async function processTask(task, config) {
         }
 
         // Confirmar estado limpio
-        const postCheck = await gitService.verify(gitCfg.defaultBranch);
+        const postCheck = await gitService.verify(gitCfg.defaultBranch, kanbanPath);
         console.log(chalk.gray(`  [git] Post-merge: branch=${postCheck.branch}, clean=${postCheck.clean}`));
       } catch (e) {
         console.log(chalk.red(`  [4/6] Git post-tarea falló: ${e.message}`));
@@ -482,7 +505,7 @@ async function processTask(task, config) {
 
   // ── PASO 4d: verificación final del repo ────
   if (gitEnabled) {
-    const finalCheck = await gitService.verify(gitCfg.defaultBranch);
+    const finalCheck = await gitService.verify(gitCfg.defaultBranch, kanbanPath);
     if (!finalCheck.clean) {
       console.log(chalk.red(`  [git] ⚠ Repo NO quedó limpio: branch=${finalCheck.branch}, dirty=${finalCheck.dirty}`));
       console.log(chalk.yellow(`  [git] Forzando limpieza final...`));
@@ -629,7 +652,7 @@ async function startLoop(cliOverrides = {}) {
         const gs = new GitService(resolvedProjectPath);
         const isRepo = await gs.isGitRepo();
         if (isRepo) {
-          const check = await gs.verify(resolvedGit.defaultBranch);
+          const check = await gs.verify(resolvedGit.defaultBranch, loopKanbanPath);
           if (check.fixed) {
             console.log(chalk.yellow(`  │ git: estado corregido (branch=${check.branch}, clean=${check.clean})`));
           } else {
@@ -641,8 +664,12 @@ async function startLoop(cliOverrides = {}) {
       }
     }
 
+    // ── DEBUG: sync write to trace crash ──
+    fs.appendFileSync('/tmp/kanban-debug.log', `[${new Date().toISOString()}] AFTER git check, before retryable\n`);
+
     // ── AUTO-RETRY: mover tareas fallidas de review a todo ──
     const retryable = checkRetryableTasks(loopKanbanPath, config.loop);
+    fs.appendFileSync('/tmp/kanban-debug.log', `[${new Date().toISOString()}] AFTER retryable check\n`);
     if (retryable.length > 0) {
       console.log(chalk.cyan(`  │ 🔄 ${retryable.length} tarea(s) para reintentar`));
       for (const { task, retryCount, timeSinceLastAttempt } of retryable) {
@@ -651,10 +678,13 @@ async function startLoop(cliOverrides = {}) {
       }
     }
 
+    fs.appendFileSync('/tmp/kanban-debug.log', `[${new Date().toISOString()}] Getting todo tasks from: ${loopKanbanPath}\n`);
     const todoTasks = getTasks('todo', loopKanbanPath);
-    
+    fs.appendFileSync('/tmp/kanban-debug.log', `[${new Date().toISOString()}] Got ${todoTasks.length} todo tasks\n`);
+
     // ── VALIDACIÓN: Solo UNA tarea a la vez ──
     const inProgressTasks = getTasks('in_progress', loopKanbanPath);
+    fs.appendFileSync('/tmp/kanban-debug.log', `[${new Date().toISOString()}] Got ${inProgressTasks.length} in_progress tasks\n`);
     if (inProgressTasks.length > 0) {
       console.log(chalk.yellow(`  │ ⚠️ ${inProgressTasks.length} tarea(s) en IN_PROGRESS`));
       console.log(chalk.yellow(`  │    → [${inProgressTasks[0].id}] ${inProgressTasks[0].title}`));
@@ -674,18 +704,22 @@ async function startLoop(cliOverrides = {}) {
     }
 
     console.log(chalk.gray(`  │ ${todoTasks.length} tarea(s) en TODO`));
+    fs.appendFileSync('/tmp/kanban-debug.log', `[${new Date().toISOString()}] todoTasks[0]: ${JSON.stringify({id: todoTasks[0]?.id, title: todoTasks[0]?.title, branch: todoTasks[0]?.branch})}\n`);
 
     // Buscar la primera tarea sin dependencias bloqueantes NI circulares
     let taskToProcess = null;
     for (const candidate of todoTasks) {
+      fs.appendFileSync('/tmp/kanban-debug.log', `[${new Date().toISOString()}] Checking candidate: ${candidate.id}\n`);
       // Verificar dependencias circulares primero
       const circular = detectCircularDependency(candidate, loopKanbanPath);
+      fs.appendFileSync('/tmp/kanban-debug.log', `[${new Date().toISOString()}] circular check done: ${JSON.stringify(circular)}\n`);
       if (circular.circular) {
         console.log(chalk.red(`  │ ⛔ [${candidate.id}] ${candidate.title} — dependencia circular: ${circular.path.join(' → ')}`));
         continue;
       }
-      
+
       const { ok, blocking } = checkDependencies(candidate, loopKanbanPath);
+      fs.appendFileSync('/tmp/kanban-debug.log', `[${new Date().toISOString()}] deps check done: ok=${ok}\n`);
       if (ok) {
         taskToProcess = candidate;
         break;
@@ -694,6 +728,7 @@ async function startLoop(cliOverrides = {}) {
       }
     }
 
+    fs.appendFileSync('/tmp/kanban-debug.log', `[${new Date().toISOString()}] taskToProcess: ${taskToProcess?.id || 'null'}\n`);
     if (!taskToProcess) {
       console.log(chalk.yellow('  │ Todas las tareas en TODO están bloqueadas.'));
       console.log(chalk.gray('  └─────────────────────────────────────────'));
@@ -704,6 +739,7 @@ async function startLoop(cliOverrides = {}) {
 
     console.log(chalk.cyan(`  │ Procesando: [${taskToProcess.id}] ${taskToProcess.title}`));
     console.log(chalk.gray('  └─────────────────────────────────────────'));
+    fs.appendFileSync('/tmp/kanban-debug.log', `[${new Date().toISOString()}] About to process task ${taskToProcess.id}\n`);
 
     if (dryRun) {
       console.log(chalk.yellow('  DRY RUN: simulando tarea\n'));
@@ -712,7 +748,7 @@ async function startLoop(cliOverrides = {}) {
       moveTask(taskToProcess.id, 'done', loopKanbanPath);
       console.log(chalk.green('  DONE (simulado)'));
     } else {
-      await processTask(taskToProcess, { ...config, engine, interactive });
+      await processTask(taskToProcess, { ...config, engine, interactive, projectPath: resolvedProjectPath, kanbanPath: loopKanbanPath });
     }
 
     processed++;

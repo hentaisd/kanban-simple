@@ -1,0 +1,8 @@
+node_modules/
+.env
+*.log
+.DS_Store
+tmp/
+.tmp/
+kanban/projects.json
+kanban/.active-project.json
